@@ -96,7 +96,7 @@
 2. **写工具默认预览**：所有批量修改、绘图、出图和导出工具默认 `dry_run=true`。
 3. **删除二次确认**：执行删除必须同时传 `dry_run=false` 和 `confirm=true`。
 4. **保存二次确认**：保存必须传 `confirm=true`。
-5. **批量限制**：默认每次最多处理 200 个写入对象、查询最多返回 500 个对象。
+5. **批量限制**：默认每次最多处理 10000 个写入对象、查询最多返回 10000 个对象（可通过环境变量调整）。
 6. **撤销分组**：批量 CAD 修改会尽量放入一次 Undo Mark 中，便于用户在 ZWCAD 内撤销。
 
 ## 环境要求
@@ -257,8 +257,8 @@ python -m zwcad_standard_mcp.server
 |---|---:|---|
 | `ZWCAD_MCP_PROG_ID` | `ZWCAD.Application` | COM ProgID |
 | `ZWCAD_MCP_AUTO_START` | `false` | 找不到运行实例时是否自动启动 ZWCAD |
-| `ZWCAD_MCP_MAX_QUERY_RESULTS` | `500` | 单次查询最大返回数量 |
-| `ZWCAD_MCP_MAX_BATCH_SIZE` | `200` | 单次批量写入最大数量 |
+| `ZWCAD_MCP_MAX_QUERY_RESULTS` | `10000` | 单次查询最大返回数量 |
+| `ZWCAD_MCP_MAX_BATCH_SIZE` | `10000` | 单次批量写入最大数量 |
 | `ZWCAD_MCP_TRANSPORT` | `stdio` | `stdio` 或 `streamable-http` |
 | `ZWCAD_MCP_ADAPTER` | `com` | `com`；测试时可设为 `fake` |
 | `ZWCAD_MCP_LOG_LEVEL` | `INFO` | 日志级别 |

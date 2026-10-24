@@ -41,7 +41,7 @@ class EntityQuerySpec(BaseModel):
     layer: str | None = None
     text_contains: str | None = None
     block_name: str | None = None
-    limit: int = Field(default=200, ge=1, le=5000)
+    limit: int = Field(default=200, ge=1, le=100000)
 
 
 class EntityPropertyPatch(BaseModel):
