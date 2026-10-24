@@ -60,7 +60,7 @@ def test_create_entities_batch() -> None:
 
 def test_title_block_attribute_preview_and_apply() -> None:
     service, adapter = build_service(allow_write=True)
-    updates = [BlockAttributePatch(handle="12", attributes={"DESIGNER": "张三", "DATE": "2026-07-21"})]
+    updates = [BlockAttributePatch(handle="12", attributes={"DESIGNER": "Jan Kowalski", "DATE": "2026-07-21"})]
     preview = service.update_block_attributes(updates, dry_run=True)
     assert preview["planned"][0]["changes"]
     assert adapter.entities["12"]["attributes"][0]["text"] == "Alice"
@@ -68,7 +68,7 @@ def test_title_block_attribute_preview_and_apply() -> None:
     applied = service.update_block_attributes(updates, dry_run=False)
     assert applied["failure_count"] == 0
     values = {item["tag"]: item["text"] for item in adapter.entities["12"]["attributes"]}
-    assert values == {"DESIGNER": "张三", "DATE": "2026-07-21"}
+    assert values == {"DESIGNER": "Jan Kowalski", "DATE": "2026-07-21"}
 
 
 def test_delete_requires_confirmation() -> None:

@@ -11,7 +11,7 @@ from .common import invoke
 def register_block_tools(mcp: Any, service: CadService) -> None:
     @mcp.tool()
     def list_block_definitions(detail: bool = False) -> dict:
-        """列出块定义，识别标准件、图框、标题栏和外部参照。"""
+        """List block definitions (standard parts, drawing frames, title blocks, external references)."""
         return invoke(service.list_block_definitions, detail)
 
     @mcp.tool()
@@ -21,7 +21,7 @@ def register_block_tools(mcp: Any, service: CadService) -> None:
         has_attributes: bool | None = None,
         limit: int = 200,
     ) -> dict:
-        """查询模型空间或布局中的实际块引用，可按块名和是否含属性过滤。"""
+        """List block references in model space or layouts; filter by block name and by whether they carry attributes."""
         return invoke(
             service.list_block_references,
             scope,
@@ -32,7 +32,7 @@ def register_block_tools(mcp: Any, service: CadService) -> None:
 
     @mcp.tool()
     def get_block_attributes(handles: list[str]) -> dict:
-        """按块引用句柄批量读取属性 TAG 和文本，适合标准版标题栏检查。"""
+        """Read attribute TAGs and values of block references by handle (title block checks)."""
         return invoke(service.get_block_attributes, handles)
 
     @mcp.tool()
@@ -41,7 +41,7 @@ def register_block_tools(mcp: Any, service: CadService) -> None:
         dry_run: bool = True,
         confirm: bool = False,
     ) -> dict:
-        """按块引用句柄批量修改属性 TAG；dry_run=true 仅预览并报告不存在的 TAG，dry_run=false 且 confirm=true 才执行并回读验证。"""
+        """Update block attributes by handle. dry_run=true previews and reports unknown TAGs; dry_run=false with confirm=true applies and reads back."""
         return invoke(service.update_block_attributes, updates, dry_run, confirm)
 
     @mcp.tool()
@@ -50,5 +50,5 @@ def register_block_tools(mcp: Any, service: CadService) -> None:
         dry_run: bool = True,
         confirm: bool = False,
     ) -> dict:
-        """批量插入已有块定义，并可同步填写属性；dry_run=true 仅预览，dry_run=false 且 confirm=true 才执行。"""
+        """Insert existing block definitions in bulk, optionally filling attributes. dry_run=true previews; dry_run=false with confirm=true executes."""
         return invoke(service.insert_blocks, blocks, dry_run, confirm)

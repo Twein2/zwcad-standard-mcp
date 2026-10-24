@@ -19,4 +19,5 @@ def build_adapter(settings: Settings) -> CadAdapter:
     return ComCadAdapter(
         prog_id=settings.prog_id,
         auto_start=settings.auto_start_cad,
+        auto_dismiss_dialogs=settings.auto_dismiss_dialogs,
     )

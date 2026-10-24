@@ -1,105 +1,108 @@
-# Tool Design: 从用户场景倒推 MCP 能力
+# Tool design: deriving MCP capabilities from user scenarios
 
-## 1. 设计原则
+## 1. Principles
 
-### 不暴露万能反射工具
+### No catch-all reflection tools
 
-禁止提供以下形式：
+The server does not expose tools of this shape:
 
 ```text
 invoke_com_method(class_name, method_name, args)
 execute_command(command_string)
 ```
 
-原因：权限边界过大、参数不可校验、结果难审计、模型选择不稳定。
+Reasons: the permission boundary is too wide, arguments cannot be validated, results are hard to audit and
+model tool choice becomes unstable.
 
-### 使用中等粒度、批量优先
+### Medium granularity, batch first
 
-推荐：
+Preferred:
 
 ```text
 update_entity_properties(handles, properties)
+update_entities_by_filter(filter, properties)
 update_block_attributes(updates)
 create_entities_batch(entities)
 plot_layouts(layout_names, output_dir)
 ```
 
-这些 Tool 既能被 Skill 编排，又不会把每个对象拆成大量 MCP 往返。
+Such tools can be orchestrated by skills without splitting every object into many MCP round trips.
 
-### 先读后写
+### Read before write
 
-每个高风险场景采用：
+Every risky scenario follows:
 
 ```text
-诊断 → 查询 → dry_run 预览 → 用户确认 → 执行 → 再读取验证
+diagnose → query → dry_run preview → user confirmation → execute → read back and verify
 ```
 
-## 2. 场景与依赖工具
+### Filter on the CAD side
 
-### 场景 A：陌生图纸快速盘点
+Large drawings (survey maps, GIS exports) contain tens of thousands of entities. Counting, selecting and bulk
+property changes use COM selection sets with DXF group-code filters evaluated inside ZWCAD
+(`count_entities`, `select_entities`, `update_entities_by_filter`) instead of iterating entities over COM.
 
-目标：用户收到供应商图纸后快速了解图层、实体、块和布局。
+### Never hang on dialogs
 
-工具：
+COM calls block while ZWCAD shows a modal dialog. Opening and plotting run inside a dialog guard: refuse to
+start when a dialog is open, silence informational prompts via system variables, answer only known-safe dialogs
+and report every dialog seen (`list_cad_dialogs`, `dismiss_cad_dialog`).
+
+## 2. Scenarios and tools
+
+### A: Quick inventory of an unknown drawing
+
+Goal: understand layers, entities, blocks and layouts of a drawing received from a third party.
 
 - diagnose_cad
 - get_current_document
-- audit_drawing
+- count_entities (group_by layer/type) — or audit_drawing on small drawings
 - list_layers
 - list_block_references
 - list_layouts
 
-### 场景 B：导入对象图层和属性归一化
+### B: Normalizing imported entities (layer 0, fixed colors, non-ByLayer linetypes)
 
-目标：解决对象全部在 0 层、颜色固定、线型不随层。
-
-工具：
-
-- get_selected_entities
+- count_entities / select_entities
 - ensure_layers
+- update_entities_by_filter
 - normalize_selected_entities
 - update_entity_properties
 - get_entity_details
 
-### 场景 C：参数化生成简单图形
+### C: Parametric creation of simple geometry
 
-目标：减少矩形板、孔阵列、文字和尺寸的重复绘制。
-
-工具：
+Goal: avoid repetitive drawing of rectangles, hole patterns, text and dimensions.
 
 - ensure_layers
 - create_entities_batch
 - get_entity_details
 
-### 场景 D：多布局批量出图
+### D: Batch plotting of layouts
 
-目标：减少逐个切换布局和命名 PDF 的操作。
-
-工具：
+Goal: avoid switching layouts and naming PDFs by hand.
 
 - get_current_document
 - list_layouts
 - plot_layouts
+- create_batch_job / get_batch_job_status / verify_export_files
 
-### 场景 E：标准版标题栏批量维护
-
-目标：处理各布局中的属性块标题栏。
-
-工具：
+### E: Title block maintenance (attribute blocks)
 
 - list_block_references
 - get_block_attributes
 - update_block_attributes
 - save_document
 
-## 3. 暂不纳入首版
+## 3. Out of scope for now
 
-- 任意 CAD 命令字符串执行
-- 图层删除和强制清理
-- XREF 绑定、拆离和路径修复
-- 动态块参数编辑
-- 布尔运算和复杂 3D 建模
-- 任意对象反射式属性写入
-- 自动保存覆盖原文件
+- Arbitrary CAD command strings
+- Deleting layers and forced purge
+- XREF bind, detach and path repair
+- Dynamic block parameter editing
+- Boolean operations and complex 3D modelling
+- Reflection-style writes to arbitrary object properties
+- Automatic save over the original file
 
-这些能力要么风险高，要么需要更明确的用户场景和实机兼容验证。
+These are either high-risk or need clearer user scenarios and validation on real ZWCAD versions.
+See `FORK_DESIGN.md` in the project notes for the planned architectural extensions.

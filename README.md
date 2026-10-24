@@ -1,153 +1,141 @@
 # ZWCAD Standard MCP
 
-面向 **中望 CAD 标准版** 的本地 MCP Server。它不是为了把所有 COM 方法机械地暴露给大模型，而是围绕 CAD 用户常见痛点，提供一组中等粒度、可批量、可预览、可验证的工具。
+A local [Model Context Protocol](https://modelcontextprotocol.io) server for **ZWCAD Standard**. Instead of
+exposing every COM method to a language model, it offers a set of medium-grained tools built around common CAD
+workflows. The tools work in batches, preview changes before applying them, and verify the results.
 
-底层使用 ZWCAD 对外公开的 ActiveX/COM API，通过 `pywin32` 连接本机正在运行的 ZWCAD；MCP 层使用官方 Python SDK。
+The server talks to a running ZWCAD instance through its public ActiveX/COM API (pywin32) and uses the official
+MCP Python SDK.
 
-> 本项目不包含中望机械版的图框、机械标题栏、BOM、球标、机械标准环境等专有能力。
+> **About this fork (Twein2/zwcad-standard-mcp)**
+> This fork builds on [qwtao321/zwcad-standard-mcp](https://github.com/qwtao321/zwcad-standard-mcp) (MIT).
+> It has been tested on ZWCAD Standard 2024 (Polish locale) in architectural practice: site plans, survey
+> maps, QGIS exports and batch PDF plotting. Changes compared with upstream:
+>
+> - **CAD-side filtered selection.** `count_entities`, `select_entities` and `update_entities_by_filter`
+>   filter by DXF type, layer wildcards, ACI color, block name and space. Drawings with tens of thousands of
+>   entities can be counted and changed in bulk within client timeouts.
+> - **Dialog guard.** `open_document`, `plot_layouts` and batch jobs handle ZWCAD dialogs as follows:
+>   - They refuse to start while a modal dialog is open (`MODAL_DIALOG_OPEN`).
+>   - They set `PROXYNOTICE`, `XREFNOTIFY` and `BACKGROUNDPLOT` to 0 for the duration of the call and restore
+>     them afterwards.
+>   - They answer known-safe dialogs (unresolved references → "Ignore…", proxy notice → OK).
+>   - They report every dialog seen during the call.
+>
+>   `list_cad_dialogs` and `dismiss_cad_dialog` work even while another COM call is blocked.
+> - **Plot verification.** `plot_layouts` checks the result of `PlotToFile` and the output file, so a missing
+>   or empty PDF is reported as a failure.
+> - **Higher default limits.** Batch and query limits are now 10,000.
+> - **Fix.** `activate_layout` is implemented in the COM adapter, so the server starts.
+> - **English-only documentation and tool descriptions.**
 
-## 解决的用户问题
+## Problems it solves
 
-| 用户痛点 | 对应能力 |
+| Problem | Tools |
 |---|---|
-| AI 连不上 CAD、版本和当前图纸不明确 | `diagnose_cad`、`get_cad_app_info`、`get_current_document` |
-| 收到陌生 DWG，不知道图层、对象和块的整体情况 | `audit_drawing`、`list_layers`、`query_entities`、`list_block_references` |
-| 外部导入图纸全部在 0 层，颜色和线型不随层 | `normalize_selected_entities`、`ensure_layers`、`update_entity_properties` |
-| 需要批量读取、修改或变换一组对象 | `get_selected_entities`、`get_entity_details`、`transform_entities` |
-| 重复绘制简单几何、文字和常用标注 | `create_entities_batch` |
-| 多个布局逐个切换和出 PDF，或先预览打印范围与设备能力 | `list_layouts`、`plot_layouts`、`preview_plot_scope`、`get_plot_capabilities`、`create_batch_job`、`scan_cad_folder` |
-| 标准版标题栏是属性块，需要批量检查和填写 | `list_block_references`、`get_block_attributes`、`update_block_attributes` |
-| 操作风险高，担心误改或误删 | 写工具默认 `dry_run=true`、每次调用授权（`confirm`）、删除/保存二次确认、Undo Mark |
+| The AI cannot reach CAD; version or active drawing unknown | `diagnose_cad`, `get_cad_app_info`, `get_current_document` |
+| An unknown DWG arrives: what layers, entities and blocks does it contain? | `count_entities`, `audit_drawing`, `list_layers`, `query_entities`, `list_block_references` |
+| Imported entities sit on layer 0 with fixed colors and linetypes | `update_entities_by_filter`, `normalize_selected_entities`, `ensure_layers`, `update_entity_properties` |
+| Read, change or transform a set of entities | `select_entities`, `get_selected_entities`, `get_entity_details`, `transform_entities` |
+| Repetitive simple geometry, text and dimensions | `create_entities_batch` |
+| Plot many layouts or a whole folder to PDF, check plot scope and devices first | `list_layouts`, `plot_layouts`, `preview_plot_scope`, `get_plot_capabilities`, `create_batch_job`, `scan_cad_folder` |
+| Title blocks are attribute blocks that need checking and filling | `list_block_references`, `get_block_attributes`, `update_block_attributes` |
+| Fear of accidental changes or deletions | dry-run by default, per-call `confirm`, second confirmation for delete/save, undo marks |
+| ZWCAD dialogs block automation | `list_cad_dialogs`, `dismiss_cad_dialog`, dialog guard |
 
-## 工具清单（37 个）
+## Tools (42)
 
-### 系统诊断
+**System**: `diagnose_cad`, `get_cad_app_info`, `audit_drawing`, `list_cad_dialogs`, `dismiss_cad_dialog`
 
-- `diagnose_cad`
-- `get_cad_app_info`
-- `audit_drawing`
+**Documents**: `get_current_document`, `list_documents`, `activate_document`, `save_document`
 
-### 文档
+**Layers**: `list_layers`, `ensure_layers`
 
-- `get_current_document`
-- `list_documents`
-- `activate_document`
-- `save_document`
+**Entities**:
+- Read and select: `count_entities`, `select_entities`, `get_selected_entities`, `query_entities`,
+  `get_entity_details`
+- Change: `update_entity_properties`, `update_entities_by_filter`, `normalize_selected_entities`,
+  `transform_entities`, `delete_entities`
 
-### 图层
+**Drawing**: `create_entities_batch`. Supports lines, circles, arcs, lightweight polylines, text, MText, block
+references, and aligned, rotated, radial and diametric dimensions.
 
-- `list_layers`
-- `ensure_layers`
+**Layouts, plotting, extents**: `list_layouts`, `activate_layout`, `get_layout_plot_settings`,
+`get_plot_capabilities`, `preview_plot_scope`, `get_current_view`, `get_drawing_extents`, `plot_layouts`,
+`export_drawing`, `verify_export_files`
 
-### 对象读取与修改
+**Blocks**: `list_block_definitions`, `list_block_references`, `get_block_attributes`,
+`update_block_attributes`, `insert_blocks_batch`
 
-- `get_selected_entities`
-- `query_entities`
-- `get_entity_details`
-- `update_entity_properties`
-- `normalize_selected_entities`
-- `transform_entities`
-- `delete_entities`
+**Files**: `scan_cad_folder`, `open_document`, `close_document`, `create_batch_job`, `get_batch_job_status`
 
-> `get_selected_entities` 同时返回选中句柄列表、合并包围盒、所在空间（model/paper）以及是否为空选择。
+### Filtered selection
 
-### 基础绘图
+```json
+{
+  "filter": {
+    "entity_types": ["POINT", "TEXT"],
+    "layers": ["0", "MO_*"],
+    "color": 256,
+    "block_names": null,
+    "space": "model"
+  },
+  "group_by": ["layer", "type"]
+}
+```
 
-- `create_entities_batch`
+The filter fields work as follows:
 
-支持：直线、圆、圆弧、轻量多段线、单行文字、多行文字、图块、对齐/旋转/半径/直径标注。
+- `entity_types` take DXF names: LINE, LWPOLYLINE, TEXT, MTEXT, INSERT, POINT, HATCH, DIMENSION and so on.
+- `layers` accept CAD wildcards: `*`, `?`, `#` and `~`.
+- `color` is an ACI number; 256 means ByLayer.
+- `space` is `model`, `paper` or `all`.
 
-### 布局、出图与范围
+ZWCAD evaluates the filter itself, so the server does not iterate entities over COM.
 
-- `list_layouts`
-- `activate_layout`
-- `get_layout_plot_settings`
-- `get_plot_capabilities`
-- `preview_plot_scope`
-- `get_current_view`
-- `get_drawing_extents`
-- `plot_layouts`
-- `export_drawing`
-- `verify_export_files`
+## Safety defaults
 
-支持：读取打印设备/纸张/样式、预览打印区域、按显示/图形范围/窗口/布局等多种范围出图、校验产物完整性与范围合理性。
+- **Per-call permission.** Read tools are always available. Every write tool defaults to `dry_run=true` and
+  returns a preview. To execute, pass `dry_run=false, confirm=true` in the same call.
+- **Second confirmations.** Deletion also requires `second_confirm=true`. Saving requires `confirm=true` and a
+  `file_path`.
+- **Batch limits.** By default a call writes at most 10,000 entities and returns at most 10,000 query results.
+  Both limits can be configured.
+- **Undo.** Bulk changes are wrapped in one undo mark, so they can be undone with a single Undo in ZWCAD.
+- **Dialogs.** Only dialogs in a small safe list are answered automatically. Licence, recovery, save and
+  unknown dialogs are never answered; they are reported instead.
 
-### 图块
-
-- `list_block_definitions`
-- `list_block_references`
-- `get_block_attributes`
-- `update_block_attributes`
-- `insert_blocks_batch`
-
-### 文件管理
-
-- `scan_cad_folder`
-- `open_document`
-- `close_document`
-- `create_batch_job`
-- `get_batch_job_status`
-
-> 文件夹级批量出图：先用 `scan_cad_folder` 列出目标目录的全部 CAD 文件，再 `create_batch_job(operation="plot_pdf", files=[...], output_dir=..., config={"plot_configuration": "DWG to PDF.pc5", "extension": "pdf"})` 在后台线程逐个只读打开、出 PDF、关闭；`get_batch_job_status` 轮询进度。批量任务在独立 COM 适配器实例中运行，不与交互会话争用主线程。
-
-## 安全默认值
-
-1. **默认预览、按调用授权**：本版本已移除启动期的全局写入开关（`ZWCAD_MCP_ALLOW_WRITE` 不再生效）。所有写工具默认 `dry_run=true` 只给变更预览；真实执行需要在**每次调用**传入 `confirm=true`（删除还需 `second_confirm=true`、保存还需 `file_path`）。无需重启服务即可在只读与可写之间切换。
-2. **写工具默认预览**：所有批量修改、绘图、出图和导出工具默认 `dry_run=true`。
-3. **删除二次确认**：执行删除必须同时传 `dry_run=false` 和 `confirm=true`。
-4. **保存二次确认**：保存必须传 `confirm=true`。
-5. **批量限制**：默认每次最多处理 10000 个写入对象、查询最多返回 10000 个对象（可通过环境变量调整）。
-6. **撤销分组**：批量 CAD 修改会尽量放入一次 Undo Mark 中，便于用户在 ZWCAD 内撤销。
-
-## 环境要求
+## Requirements
 
 - Windows 10/11
-- 已安装中望 CAD 标准版，并开放 ActiveX/COM 自动化接口
-- 启动 ZWCAD 并打开至少一个 DWG
+- ZWCAD Standard with ActiveX/COM automation, running with at least one drawing open
 - Python 3.10+
 
-默认 COM ProgID：
+The default COM ProgID is `ZWCAD.Application`. Use `ZWCAD_MCP_PROG_ID` to change it, for example to
+`ZWCAD.Application.2024`.
 
-```text
-ZWCAD.Application
-```
+## Installation
 
-某些版本或安装环境如使用不同 ProgID，可通过 `ZWCAD_MCP_PROG_ID` 修改。
+One-click: run `install.bat`, start ZWCAD and open a drawing, then run `start.bat`.
 
-## 安装
+Command line:
 
-### 一键安装
-
-双击：
-
-```text
-install.bat
-```
-
-安装完成后，先启动 ZWCAD 并打开 DWG，再运行：
-
-```text
-start.bat
-```
-
-### 命令行安装
-
-```powershell
+```bat
 py -3.11 -m venv .venv
 .venv\Scripts\activate
 pip install -e .
 python -m zwcad_standard_mcp.server
 ```
 
-## MCP 客户端配置
+## MCP client configuration
 
-复制 `mcp-config.example.json` 并修改本机绝对路径：
+Copy `mcp-config.example.json` and adjust the absolute paths:
 
 ```json
 {
   "mcpServers": {
     "zwcad-standard": {
-      "command": "D:\\path\\to\\zwcad-standard-mcp\\.venv\\Scripts\\python.exe",
+      "command": "C:\\MCP\\zwcad-standard-mcp\\.venv\\Scripts\\python.exe",
       "args": ["-m", "zwcad_standard_mcp.server"],
       "env": {
         "ZWCAD_MCP_PROG_ID": "ZWCAD.Application",
@@ -158,150 +146,109 @@ python -m zwcad_standard_mcp.server
 }
 ```
 
-本版本采用「每次调用授权」模型，无需在配置里预设写入开关，也无需重启服务来切换读写：
+## Configuration
 
-- 只读操作（`diagnose_cad` / 读取 / 查询 / 图层列表）随时可用。
-- 写操作先以 `dry_run=true` 看预览；确认无误后在**同一次调用**加 `dry_run=false, confirm=true` 真正执行。
-- 删除需 `confirm=true` 且 `second_confirm=true`；保存需 `confirm=true` 并提供 `file_path`。
+| Environment variable | Default | Meaning |
+|---|---|---|
+| `ZWCAD_MCP_PROG_ID` | `ZWCAD.Application` | COM ProgID |
+| `ZWCAD_MCP_AUTO_START` | `false` | Start ZWCAD when no running instance is found |
+| `ZWCAD_MCP_MAX_QUERY_RESULTS` | `10000` | Maximum results returned by a query |
+| `ZWCAD_MCP_MAX_BATCH_SIZE` | `10000` | Maximum entities written in one call |
+| `ZWCAD_MCP_AUTO_DISMISS_DIALOGS` | `true` | Answer known-safe ZWCAD dialogs during open/plot |
+| `ZWCAD_MCP_TRANSPORT` | `stdio` | `stdio` or `streamable-http` |
+| `ZWCAD_MCP_ADAPTER` | `com` | `com`; `fake` for tests |
+| `ZWCAD_MCP_LOG_LEVEL` | `INFO` | Log level |
 
-## 推荐验证顺序
+## Recommended validation order
 
-### 第 1 阶段：只读连通
+1. **Read-only:** `diagnose_cad`, `get_current_document`, `count_entities`, `list_layers`,
+   `get_selected_entities`.
+2. **Low-risk edits on a copy:**
+   - `ensure_layers`, then `update_entities_by_filter` with `dry_run=true`.
+   - Execute with `confirm=true`.
+   - Test Undo in ZWCAD.
+3. **Title blocks:**
+   - `list_block_references(has_attributes=true)`, then `get_block_attributes`.
+   - `update_block_attributes` with `dry_run=true`, then execute.
+   - Read back to verify.
+4. **Plotting:**
+   - `get_plot_capabilities`, `preview_plot_scope`, then `plot_layouts`.
+   - For a whole folder: `scan_cad_folder`, then `create_batch_job(confirm=true)`, `get_batch_job_status` and
+     `verify_export_files`.
 
-1. `diagnose_cad`
-2. `get_current_document`
-3. `audit_drawing`
-4. `list_layers`
-5. `get_selected_entities`
+## Examples
 
-### 第 2 阶段：低风险修改
-
-1. 在 ZWCAD 中复制一份测试图纸。
-2. 选中少量对象。
-3. 调用 `normalize_selected_entities(dry_run=true)`。
-4. 检查预览。
-5. 开启写入后调用 `dry_run=false`。
-6. 在 ZWCAD 中测试一次 Undo。
-
-### 第 3 阶段：标准版标题栏
-
-1. `list_block_references(has_attributes=true)` 找到标题栏块。
-2. `get_block_attributes` 读取属性 TAG。
-3. `update_block_attributes(dry_run=true)` 预览。
-4. 用户确认后用 `dry_run=false` 执行。
-5. 再次读取属性验证。
-
-### 第 4 阶段：文件夹级批量出图
-
-1. `scan_cad_folder(path="目标目录")` 列出全部 DWG/DXF/DWT。
-2. `create_batch_job(operation="plot_pdf", files=[...], output_dir=".../Publish", config={"plot_configuration": "DWG to PDF.pc5", "extension": "pdf"}, confirm=true)` 创建并执行批量任务。
-3. `get_batch_job_status(job_id=...)` 轮询进度。
-4. `verify_export_files(file_paths=[...])` 校验产物。
-
-## 示例
-
-### 归一化当前选中对象
+Bulk-move points from layer 0 (preview):
 
 ```json
 {
-  "target_layer": "OUTLINE",
-  "set_color_bylayer": true,
-  "set_linetype_bylayer": true,
+  "patch": {
+    "filter": {"entity_types": ["POINT"], "layers": ["0"]},
+    "layer": "MO_GEO_POINTS",
+    "color": 256
+  },
   "dry_run": true
 }
 ```
 
-### 批量绘制矩形和孔
+Draw a rectangle and a hole:
 
 ```json
 {
   "entities": [
-    {
-      "entity_type": "lwpolyline",
-      "layer": "OUTLINE",
-      "params": {
-        "vertices": [[0, 0], [300, 0], [300, 200], [0, 200]],
-        "closed": true
-      }
-    },
-    {
-      "entity_type": "circle",
-      "layer": "HOLE",
-      "params": {"center": [25, 25, 0], "radius": 5}
-    }
+    {"entity_type": "lwpolyline", "layer": "OUTLINE",
+     "params": {"vertices": [[0, 0], [300, 0], [300, 200], [0, 200]], "closed": true}},
+    {"entity_type": "circle", "layer": "HOLE", "params": {"center": [25, 25, 0], "radius": 5}}
   ],
   "dry_run": true
 }
 ```
 
-### 更新标准版标题栏属性块
+Update title block attributes:
 
 ```json
 {
-  "updates": [
-    {
-      "handle": "3AF",
-      "attributes": {
-        "DESIGNER": "张三",
-        "DATE": "2026-07-21"
-      }
-    }
-  ],
+  "updates": [{"handle": "3AF", "attributes": {"DESIGNER": "Jan Kowalski", "DATE": "2026-07-21"}}],
   "dry_run": true
 }
 ```
 
-## 配置项
+More examples are in `examples/USAGE.md`.
 
-| 环境变量 | 默认值 | 说明 |
-|---|---:|---|
-| `ZWCAD_MCP_PROG_ID` | `ZWCAD.Application` | COM ProgID |
-| `ZWCAD_MCP_AUTO_START` | `false` | 找不到运行实例时是否自动启动 ZWCAD |
-| `ZWCAD_MCP_MAX_QUERY_RESULTS` | `10000` | 单次查询最大返回数量 |
-| `ZWCAD_MCP_MAX_BATCH_SIZE` | `10000` | 单次批量写入最大数量 |
-| `ZWCAD_MCP_TRANSPORT` | `stdio` | `stdio` 或 `streamable-http` |
-| `ZWCAD_MCP_ADAPTER` | `com` | `com`；测试时可设为 `fake` |
-| `ZWCAD_MCP_LOG_LEVEL` | `INFO` | 日志级别 |
+## Tests
 
-## 测试
+The repository includes a fake adapter that needs neither Windows nor ZWCAD:
 
-代码仓库包含不依赖 Windows/ZWCAD 的 Fake Adapter：
-
-```powershell
+```bat
 pip install -e ".[dev]"
 pytest
 ```
 
-本地查看 MCP 工具 Schema 时可使用：
+To inspect the tool schemas locally, set `ZWCAD_MCP_ADAPTER=fake` and run `python -m zwcad_standard_mcp.server`.
 
-```powershell
-set ZWCAD_MCP_ADAPTER=fake
-python -m zwcad_standard_mcp.server
+## Known limitations
+
+- Mechanical-edition objects (frames, BOM, balloons) are not supported.
+- Dynamic blocks, nested blocks, attributes inside XREFs, fields and complex proxy objects need dedicated work.
+- `plot_layouts` relies on a usable plot configuration in each layout. Company PC3/PC5, PMP and paper setups
+  must be checked on the target machine.
+- `query_entities` and `audit_drawing` still iterate entities over COM. On large drawings use
+  `count_entities` and `select_entities` instead.
+- Dialogs not in the safe list still block a COM call until a user, or `dismiss_cad_dialog`, answers them.
+- Undo marks make changes easy to undo, but they are not database transactions.
+
+## Project structure
+
 ```
-
-## 已知边界
-
-- 未在当前生成环境中连接真实 Windows ZWCAD，因此 COM 方法需要在目标 ZWCAD 版本上进行实机验收。
-- 不包含机械版专用对象。
-- 动态块、嵌套块、外部参照内属性、字段对象、复杂代理对象可能需要后续专项适配。
-- `plot_layouts` 依赖当前布局已有可用打印配置；不同企业 PC3、PMP 和纸张配置需实机验证。
-- 文件夹级批量任务（`create_batch_job` 传入 `files`）在后台线程中打开图纸并出图；若 ZWCAD 因缺少字体、代理对象或打印配置弹出模态对话框，会阻塞该后台线程，需先在 ZWCAD 中关闭所有弹窗再重试。
-- 当前查询以 COM 集合遍历为主，大图纸需要进一步增加索引、选择集过滤和分页。
-- Undo Mark 便于用户撤销，但不是数据库级自动事务回滚。
-
-## 项目结构
-
-```text
 zwcad-standard-mcp/
 ├── README.md
 ├── pyproject.toml
-├── install.bat
-├── start.bat
+├── install.bat / start.bat
 ├── mcp-config.example.json
-├── docs/
-├── examples/
+├── docs/            design notes and acceptance tests
+├── examples/        agent usage examples
 ├── src/zwcad_standard_mcp/
-│   ├── adapters/
+│   ├── adapters/    com.py, fake.py, selection.py, dialogs.py
 │   ├── services/
 │   ├── tools/
 │   ├── config.py
@@ -310,8 +257,15 @@ zwcad-standard-mcp/
 └── tests/
 ```
 
-## 参考
+## Credits and licence
 
-- ZWCAD Application Development Support: https://www.zwsoft.com/support/zwcad-devdoc
+- Original project: [qwtao321/zwcad-standard-mcp](https://github.com/qwtao321/zwcad-standard-mcp), MIT licence.
+  The copyright notice in `LICENSE` is kept.
+- Planned additions from [dalingo81/ZWCAD-MCP](https://github.com/dalingo81/ZWCAD-MCP) (MIT) will keep its
+  notice as well.
+
+## References
+
+- ZWCAD application development support: https://www.zwsoft.com/support/zwcad-devdoc
 - Official MCP Python SDK: https://github.com/modelcontextprotocol/python-sdk
 - ZWCAD Mechanical MCP reference implementation: https://github.com/john0909/ZWCAD-Mechanical-MCP

@@ -15,5 +15,5 @@ def register_drawing_tools(mcp: Any, service: CadService) -> None:
         dry_run: bool = True,
         confirm: bool = False,
     ) -> dict:
-        """批量创建直线、圆、圆弧、多段线、文字、图块及常用尺寸标注。dry_run=true 仅预览，dry_run=false 且 confirm=true 才真正写入。"""
+        """Create lines, circles, arcs, polylines, text, MText, block references and common dimensions in bulk. dry_run=true previews; dry_run=false with confirm=true writes."""
         return invoke(service.create_entities, entities, dry_run, confirm)

@@ -5,6 +5,7 @@ from typing import Any, Iterable
 
 from zwcad_standard_mcp.models import (
     EntityCreateSpec,
+    EntityFilter,
     EntityQuerySpec,
     LayerSpec,
     PlotScopeRequest,
@@ -147,3 +148,27 @@ class CadAdapter(ABC):
 
     @abstractmethod
     def end_undo(self) -> None: ...
+
+    # --- CAD-side filtered selection (fast path for large drawings) ---------------
+
+    @abstractmethod
+    def count_entities(self, flt: EntityFilter, group_by: list[str] | None = None) -> dict:
+        """Count entities matching ``flt``; optional grouping by "type" and/or "layer"."""
+
+    @abstractmethod
+    def select_handles(self, flt: EntityFilter, limit: int) -> dict:
+        """Return ``{"count", "handles", "truncated"}`` for entities matching ``flt``."""
+
+    @abstractmethod
+    def update_entities_by_filter(self, flt: EntityFilter, properties: dict[str, Any]) -> dict:
+        """Apply ``properties`` to every matching entity without per-entity snapshots."""
+
+    # --- Modal dialog handling ------------------------------------------------------
+
+    def list_dialogs(self) -> list[dict]:
+        """Visible modal dialogs owned by the CAD process (empty when unsupported)."""
+        return []
+
+    def dismiss_dialog(self, title_contains: str, button: str) -> dict:
+        return {"success": False, "error": "Dialog handling is not supported by this adapter."}
+

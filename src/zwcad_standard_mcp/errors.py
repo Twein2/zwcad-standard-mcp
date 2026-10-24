@@ -40,3 +40,19 @@ class UnsupportedOperationError(ZWCADMCPError):
 
 class BatchLimitError(ZWCADMCPError):
     code = "BATCH_LIMIT_EXCEEDED"
+
+
+class ModalDialogError(ZWCADMCPError):
+    """ZWCAD shows a modal dialog that blocks COM automation."""
+
+    code = "MODAL_DIALOG_OPEN"
+
+    def __init__(self, message: str, dialogs: list[dict] | None = None) -> None:
+        super().__init__(message)
+        self.dialogs = dialogs or []
+
+    def as_dict(self) -> dict:
+        data = super().as_dict()
+        data["dialogs"] = self.dialogs
+        data["hint"] = "Close the dialog in ZWCAD (or call dismiss_cad_dialog) and retry."
+        return data

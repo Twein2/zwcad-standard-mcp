@@ -17,6 +17,7 @@ class Settings:
     auto_start_cad: bool = False
     max_query_results: int = 10000
     max_batch_size: int = 10000
+    auto_dismiss_dialogs: bool = True
     transport: str = "stdio"
     adapter: str = "com"
     log_level: str = "INFO"
@@ -29,6 +30,7 @@ class Settings:
             auto_start_cad=_as_bool(os.getenv("ZWCAD_MCP_AUTO_START"), False),
             max_query_results=max(1, int(os.getenv("ZWCAD_MCP_MAX_QUERY_RESULTS", "10000"))),
             max_batch_size=max(1, int(os.getenv("ZWCAD_MCP_MAX_BATCH_SIZE", "10000"))),
+            auto_dismiss_dialogs=_as_bool(os.getenv("ZWCAD_MCP_AUTO_DISMISS_DIALOGS"), True),
             transport=os.getenv("ZWCAD_MCP_TRANSPORT", "stdio").strip().lower(),
             adapter=os.getenv("ZWCAD_MCP_ADAPTER", "com").strip().lower(),
             log_level=os.getenv("ZWCAD_MCP_LOG_LEVEL", "INFO").strip().upper(),
