@@ -7,6 +7,9 @@ from typing import Any
 
 from zwcad_standard_mcp.errors import EntityNotFoundError, ValidationError
 from zwcad_standard_mcp.models import (
+    DimStyleSpec,
+    HatchRequest,
+    TextStyleSpec,
     EntityCreateSpec,
     EntityFilter,
     EntityQuerySpec,
@@ -598,6 +601,49 @@ class FakeCadAdapter(CadAdapter):
             if height is not None:
                 self._entity(handle)["height"] = height
         return {"changed": len(changes), "failed": 0, "failures_sample": [], "remaining": 0, "elapsed_s": 0.0}
+
+    text_styles: dict[str, dict] = {}
+    dim_styles: dict[str, dict] = {}
+    insunits: int = 5
+
+    def style_exists(self, kind: str, name: str) -> bool:
+        return name.lower() in {k.lower() for k in (self.text_styles if kind == "text" else self.dim_styles)}
+
+    def ensure_text_style(self, spec: TextStyleSpec) -> dict:
+        created = not self.style_exists("text", spec.name)
+        self.text_styles = {**self.text_styles, spec.name: spec.model_dump()}
+        return {"name": spec.name, "success": True, "created": created, "font": spec.font, "notes": []}
+
+    def ensure_dim_style(self, spec: DimStyleSpec) -> dict:
+        created = not self.style_exists("dim", spec.name)
+        self.dim_styles = {**self.dim_styles, spec.name: spec.model_dump()}
+        applied = [k for k, v in spec.model_dump(exclude={"name", "extra", "set_current"}).items() if v is not None]
+        return {"name": spec.name, "success": True, "created": created, "variables_set": applied,
+                "variables_failed": {}, "current": spec.set_current}
+
+    def create_hatch(self, request: HatchRequest) -> dict:
+        outer = self._entity(request.outer_handle)
+        area = float(outer.get("area", 0.0)) - sum(float(self._entity(h).get("area", 0.0)) for h in request.inner_handles)
+        handle = str(next(self._handles))
+        self.entities[handle] = {"handle": handle, "object_name": "AcDbHatch", "entity_type": "hatch",
+                                 "layer": request.layer or "0", "layout": "Model", "area": area}
+        return {"success": True, "handle": handle, "layer": request.layer or "0", "pattern": request.pattern,
+                "area": area, "islands": len(request.inner_handles)}
+
+    def curve_areas(self, handles: list[str]) -> dict[str, dict]:
+        out = {}
+        for handle in handles:
+            entity = self.entities.get(handle)
+            if entity is None or "area" not in entity:
+                out[handle] = {"success": False, "error": "no area"}
+            else:
+                out[handle] = {"success": True, "type": dxf_name(entity.get("object_name", "")),
+                               "closed": entity.get("closed", True), "area": float(entity["area"]),
+                               "layer": entity.get("layer", "0")}
+        return out
+
+    def drawing_units(self) -> int:
+        return self.insunits
 
     def update_entities_by_filter(self, flt: EntityFilter, properties: dict[str, Any]) -> dict:
         found = self._filtered(flt)

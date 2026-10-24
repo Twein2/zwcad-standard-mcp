@@ -19,6 +19,9 @@ from zwcad_standard_mcp.errors import (
     ValidationError,
 )
 from zwcad_standard_mcp.models import (
+    DimStyleSpec,
+    HatchRequest,
+    TextStyleSpec,
     EntityCreateSpec,
     EntityFilter,
     EntityQuerySpec,
@@ -655,6 +658,148 @@ class ComCadAdapter(CadAdapter):
             "remaining": len(changes) - done,
             "elapsed_s": round(time.monotonic() - started, 3),
         }
+
+    # ---------------------------------------------------------- styles / hatch / areas
+
+    def _sysvar_value(self, value: Any) -> Any:
+        # AutoCAD-compatible SetVariable expects VT_I2 for integer variables.
+        if isinstance(value, bool):
+            value = int(value)
+        if isinstance(value, int):
+            return self._win32_client.VARIANT(self._pythoncom.VT_I2, value)
+        return value
+
+    def style_exists(self, kind: str, name: str) -> bool:
+        doc = self._doc()
+        collection = doc.TextStyles if kind == "text" else doc.DimStyles
+        try:
+            collection.Item(name)
+            return True
+        except Exception:
+            return False
+
+    def ensure_text_style(self, spec: TextStyleSpec) -> dict:
+        doc = self._doc()
+        created = not self.style_exists("text", spec.name)
+        notes: list[str] = []
+        with self._undo_group():
+            style = doc.TextStyles.Add(spec.name) if created else doc.TextStyles.Item(spec.name)
+            try:
+                # 238 = EASTEUROPE_CHARSET (Polish), 34 = VARIABLE_PITCH | FF_SWISS
+                style.SetFont(spec.font, spec.bold, spec.italic, 238, 34)
+            except Exception as exc:
+                notes.append(f"SetFont failed ({exc}); using FontFile")
+                style.FontFile = spec.font if spec.font.lower().endswith((".ttf", ".shx")) else f"{spec.font}.ttf"
+            style.Height = spec.height
+            style.Width = spec.width_factor
+            style.ObliqueAngle = math.radians(spec.oblique_deg)
+        return {"name": spec.name, "success": True, "created": created, "font": spec.font, "notes": notes}
+
+    def ensure_dim_style(self, spec: DimStyleSpec) -> dict:
+        doc = self._doc()
+        wanted: dict[str, Any] = {
+            "DIMTXSTY": spec.text_style,
+            "DIMTXT": spec.text_height,
+            "DIMASZ": spec.arrow_size,
+            "DIMBLK": spec.arrow_block,
+            "DIMSCALE": spec.overall_scale,
+            "DIMLFAC": spec.linear_scale,
+            "DIMDEC": spec.decimals,
+            "DIMDSEP": spec.decimal_separator,
+            "DIMGAP": spec.text_gap,
+            "DIMEXO": spec.ext_line_offset,
+            "DIMEXE": spec.ext_line_extension,
+        }
+        wanted.update({k.upper(): v for k, v in spec.extra.items()})
+        wanted = {k: v for k, v in wanted.items() if v is not None}
+        if spec.arrow_block == "":
+            wanted["DIMBLK"] = "."
+        created = not self.style_exists("dim", spec.name)
+        saved: dict[str, Any] = {}
+        applied: list[str] = []
+        failed: dict[str, str] = {}
+        with self._undo_group():
+            for name, value in wanted.items():
+                try:
+                    saved[name] = doc.GetVariable(name)
+                    doc.SetVariable(name, self._sysvar_value(value))
+                    applied.append(name)
+                except Exception as exc:
+                    failed[name] = str(exc)
+            style = doc.DimStyles.Add(spec.name) if created else doc.DimStyles.Item(spec.name)
+            style.CopyFrom(doc)
+            if spec.set_current:
+                doc.ActiveDimStyle = style
+            else:
+                for name, old in saved.items():
+                    try:
+                        doc.SetVariable(name, self._sysvar_value(old) if isinstance(old, int) else old)
+                    except Exception:
+                        pass
+        return {
+            "name": spec.name,
+            "success": not failed,
+            "created": created,
+            "variables_set": applied,
+            "variables_failed": failed,
+            "current": spec.set_current,
+        }
+
+    def create_hatch(self, request: HatchRequest) -> dict:
+        doc = self._doc()
+        outer = self._handle_to_object(request.outer_handle)
+        inners = [self._handle_to_object(h) for h in request.inner_handles]
+        objects = lambda items: self._win32_client.VARIANT(  # noqa: E731
+            self._pythoncom.VT_ARRAY | self._pythoncom.VT_DISPATCH, tuple(items)
+        )
+        with self._undo_group():
+            hatch = doc.ModelSpace.AddHatch(1, request.pattern, request.associative)  # 1 = predefined pattern
+            try:
+                if request.pattern.upper() != "SOLID":
+                    hatch.PatternScale = request.scale
+                    hatch.PatternAngle = math.radians(request.angle_deg)
+                hatch.AppendOuterLoop(objects([outer]))
+                for inner in inners:
+                    hatch.AppendInnerLoop(objects([inner]))
+                if request.layer:
+                    hatch.Layer = request.layer
+                if request.color is not None:
+                    hatch.Color = request.color
+                hatch.Evaluate()
+            except Exception:
+                with contextlib.suppress(Exception):
+                    hatch.Delete()
+                raise
+        return {
+            "success": True,
+            "handle": str(hatch.Handle),
+            "layer": str(self._safe_get(hatch, "Layer", "")),
+            "pattern": request.pattern,
+            "area": float(self._safe_get(hatch, "Area", 0.0)),
+            "islands": len(inners),
+        }
+
+    def curve_areas(self, handles: list[str]) -> dict[str, dict]:
+        out: dict[str, dict] = {}
+        for handle in handles:
+            try:
+                obj = self._doc().HandleToObject(handle)
+                out[handle] = {
+                    "success": True,
+                    "type": dxf_name(str(self._safe_get(obj, "ObjectName", ""))),
+                    "closed": bool(self._safe_get(obj, "Closed", True)),
+                    "area": float(obj.Area),
+                    "layer": str(self._safe_get(obj, "Layer", "")),
+                }
+            except Exception as exc:
+                out[handle] = {"success": False, "error": str(exc)}
+        return out
+
+    def drawing_units(self) -> int:
+        try:
+            return int(self._doc().GetVariable("INSUNITS"))
+        except Exception:
+            return 0
 
     def diagnose(self) -> dict:
         checks: list[dict] = []

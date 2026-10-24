@@ -179,3 +179,64 @@ class TextUpdateRequest(BaseModel):
     case_sensitive: bool = True
     wrong_codepage: str = Field(default="cp1250", description="Codepage the UTF-8 bytes were wrongly read with")
     time_budget_s: float = Field(default=45.0, gt=1, le=55)
+
+
+class TextStyleSpec(BaseModel):
+    """Text style with a TrueType font (avoids '?' for Polish characters, en dash and multiplication sign)."""
+
+    name: str = Field(min_length=1)
+    font: str = Field(default="Arial", description="TrueType family name, e.g. 'Arial', 'Arial Narrow', 'ISOCPEUR'")
+    bold: bool = False
+    italic: bool = False
+    height: float = Field(default=0.0, ge=0, description="0 = height set per text")
+    width_factor: float = Field(default=1.0, gt=0)
+    oblique_deg: float = 0.0
+
+
+class DimStyleSpec(BaseModel):
+    """Dimension style created from DIM* system variables (CopyFrom the document)."""
+
+    name: str = Field(min_length=1)
+    text_style: str | None = Field(default=None, description="DIMTXSTY")
+    text_height: float | None = Field(default=None, gt=0, description="DIMTXT")
+    arrow_size: float | None = Field(default=None, ge=0, description="DIMASZ")
+    arrow_block: str | None = Field(default=None, description="DIMBLK, e.g. '_ARCHTICK', '_OBLIQUE', '' for closed filled")
+    overall_scale: float | None = Field(default=None, gt=0, description="DIMSCALE")
+    linear_scale: float | None = Field(default=None, gt=0, description="DIMLFAC, e.g. 0.01 to show metres in a cm drawing")
+    decimals: int | None = Field(default=None, ge=0, le=8, description="DIMDEC")
+    decimal_separator: str | None = Field(default=None, max_length=1, description="DIMDSEP, e.g. ','")
+    text_gap: float | None = Field(default=None, description="DIMGAP")
+    ext_line_offset: float | None = Field(default=None, description="DIMEXO")
+    ext_line_extension: float | None = Field(default=None, description="DIMEXE")
+    extra: dict[str, float | int | str] = Field(default_factory=dict, description="Other DIM* variables")
+    set_current: bool = False
+
+
+class HatchRequest(BaseModel):
+    outer_handle: str = Field(min_length=1, description="Closed boundary (polyline, circle, region)")
+    inner_handles: list[str] = Field(default_factory=list, description="Islands, e.g. building outlines")
+    pattern: str = Field(default="SOLID", description="Predefined pattern name: SOLID, ANSI31, ANSI37, AR-CONC ...")
+    scale: float = Field(default=1.0, gt=0)
+    angle_deg: float = 0.0
+    layer: str | None = None
+    color: int | None = Field(default=None, ge=0, le=256)
+    associative: bool = True
+
+
+class AreaLimits(BaseModel):
+    min_pbc_percent: float | None = Field(default=None, description="Minimum biologically active area, % of plot")
+    max_building_percent: float | None = Field(default=None, description="Maximum building footprint, % of plot")
+    min_intensity: float | None = None
+    max_intensity: float | None = None
+
+
+class AreaTakeoffRequest(BaseModel):
+    """Site balance (bilans terenu) from closed outlines; areas are assumed not to overlap."""
+
+    plot_handle: str = Field(min_length=1)
+    building_handles: list[str] = Field(default_factory=list)
+    paved_handles: list[str] = Field(default_factory=list)
+    other_handles: dict[str, list[str]] = Field(default_factory=dict, description="Extra named groups, e.g. {'water': [...]}")
+    gross_floor_area_m2: float | None = Field(default=None, ge=0, description="For building intensity (MPZP 'intensywność')")
+    units: Literal["auto", "mm", "cm", "m"] = "auto"
+    limits: AreaLimits = Field(default_factory=AreaLimits)

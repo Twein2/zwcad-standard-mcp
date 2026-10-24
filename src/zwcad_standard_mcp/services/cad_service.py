@@ -25,6 +25,10 @@ from zwcad_standard_mcp.models import (
     FilteredPropertyPatch,
     EntityQuerySpec,
     LayerMapRequest,
+    AreaTakeoffRequest,
+    DimStyleSpec,
+    HatchRequest,
+    TextStyleSpec,
     LayerSpec,
     LayerStandard,
     PlotScopeRequest,
@@ -735,6 +739,135 @@ class CadService:
             "sample": sample[:3],
             "hint": "Run again to continue." if result["remaining"] else None,
         }
+
+    # --- annotation styles ------------------------------------------------------------
+
+    def ensure_text_styles(self, styles: list[TextStyleSpec], dry_run: bool = True, confirm: bool = False) -> dict:
+        self._limit(styles, "styles")
+        if dry_run:
+            plan = [{"name": s.name, "operation": "update" if self.adapter.style_exists("text", s.name) else "create",
+                     "font": s.font} for s in styles]
+            return {"success": True, "dry_run": True, "planned": plan}
+        rejection = require_permission(PermissionLevel.MODIFY, confirm=confirm)
+        if rejection:
+            return rejection
+        self._ensure_write()
+        results = []
+        for spec in styles:
+            try:
+                results.append(self.adapter.ensure_text_style(spec))
+            except Exception as exc:
+                results.append({"name": spec.name, "success": False, "error": str(exc)})
+        return {"success": all(r.get("success") for r in results), "dry_run": False, "results": results}
+
+    def ensure_dim_styles(self, styles: list[DimStyleSpec], dry_run: bool = True, confirm: bool = False) -> dict:
+        self._limit(styles, "styles")
+        for spec in styles:
+            bad = [k for k in spec.extra if not k.upper().startswith("DIM")]
+            if bad:
+                raise ValidationError(f"extra may contain DIM* variables only, got: {bad}")
+            if spec.text_style and not self.adapter.style_exists("text", spec.text_style):
+                raise ValidationError(f"Text style not found: {spec.text_style} (create it with ensure_text_styles).")
+        if dry_run:
+            plan = [{"name": s.name, "operation": "update" if self.adapter.style_exists("dim", s.name) else "create",
+                     "variables": s.model_dump(exclude={"name"}, exclude_none=True)} for s in styles]
+            return {"success": True, "dry_run": True, "planned": plan}
+        rejection = require_permission(PermissionLevel.MODIFY, confirm=confirm)
+        if rejection:
+            return rejection
+        self._ensure_write()
+        results = []
+        for spec in styles:
+            try:
+                results.append(self.adapter.ensure_dim_style(spec))
+            except Exception as exc:
+                results.append({"name": spec.name, "success": False, "error": str(exc)})
+        return {"success": all(r.get("success") for r in results), "dry_run": False, "results": results}
+
+    # --- hatch and site balance -------------------------------------------------------
+
+    _UNIT_TO_M2 = {4: 1e-6, 5: 1e-4, 6: 1.0}
+    _UNIT_NAMES = {"mm": 4, "cm": 5, "m": 6}
+
+    def create_hatch(self, request: HatchRequest, dry_run: bool = True, confirm: bool = False) -> dict:
+        handles = [request.outer_handle, *request.inner_handles]
+        areas = self.adapter.curve_areas(handles)
+        problems = {h: a.get("error") or "boundary is not closed" for h, a in areas.items()
+                    if not a.get("success") or not a.get("closed", True)}
+        if problems:
+            raise ValidationError(f"Invalid hatch boundaries: {problems}")
+        if request.layer:
+            existing = {item["name"].lower() for item in self.adapter.list_layers(detail=False)}
+            if request.layer.lower() not in existing:
+                raise ValidationError(f"Layer does not exist: {request.layer} (create it with ensure_layers).")
+        expected = areas[request.outer_handle]["area"] - sum(areas[h]["area"] for h in request.inner_handles)
+        if dry_run:
+            return {"success": True, "dry_run": True, "boundaries": areas, "expected_area": expected,
+                    "pattern": request.pattern, "layer": request.layer}
+        rejection = require_permission(PermissionLevel.MODIFY, confirm=confirm)
+        if rejection:
+            return rejection
+        self._ensure_write()
+        result = self.adapter.create_hatch(request)
+        result["expected_area"] = expected
+        return result
+
+    def area_takeoff(self, request: AreaTakeoffRequest) -> dict:
+        groups: dict[str, list[str]] = {
+            "plot": [request.plot_handle],
+            "buildings": request.building_handles,
+            "paved": request.paved_handles,
+            **request.other_handles,
+        }
+        all_handles = [h for hs in groups.values() for h in hs]
+        self._limit(all_handles, "handles")
+        areas = self.adapter.curve_areas(all_handles)
+        errors = {h: a.get("error") or "not closed" for h, a in areas.items() if not a.get("success") or not a.get("closed", True)}
+        if errors:
+            raise ValidationError(f"Cannot measure: {errors}")
+        insunits = self._UNIT_NAMES[request.units] if request.units != "auto" else self.adapter.drawing_units()
+        factor = self._UNIT_TO_M2.get(insunits)
+        if factor is None:
+            raise ValidationError(f"Drawing units unknown (INSUNITS={insunits}); pass units='mm'|'cm'|'m'.")
+
+        def total(name: str) -> float:
+            return round(sum(areas[h]["area"] for h in groups.get(name, [])) * factor, 2)
+
+        plot = total("plot")
+        sums = {name: total(name) for name in groups if name != "plot"}
+        occupied = sum(sums.values())
+        pbc = round(plot - occupied, 2)
+
+        def pct(value: float) -> float:
+            return round(100.0 * value / plot, 2) if plot else 0.0
+
+        result: dict[str, Any] = {
+            "success": True,
+            "units": {4: "mm", 5: "cm", 6: "m"}[insunits],
+            "plot_m2": plot,
+            "areas_m2": sums,
+            "biologically_active_m2": pbc,
+            "percent_of_plot": {**{k: pct(v) for k, v in sums.items()}, "biologically_active": pct(pbc)},
+            "assumption": "PBC = plot - all listed areas; outlines must not overlap and must lie inside the plot.",
+        }
+        if request.gross_floor_area_m2 is not None and plot:
+            result["intensity"] = round(request.gross_floor_area_m2 / plot, 3)
+        checks = []
+        lim = request.limits
+        if lim.min_pbc_percent is not None:
+            checks.append({"check": "PBC >= min", "limit": lim.min_pbc_percent, "value": pct(pbc), "ok": pct(pbc) >= lim.min_pbc_percent})
+        if lim.max_building_percent is not None:
+            value = pct(sums.get("buildings", 0.0))
+            checks.append({"check": "buildings <= max", "limit": lim.max_building_percent, "value": value, "ok": value <= lim.max_building_percent})
+        if "intensity" in result:
+            if lim.min_intensity is not None:
+                checks.append({"check": "intensity >= min", "limit": lim.min_intensity, "value": result["intensity"], "ok": result["intensity"] >= lim.min_intensity})
+            if lim.max_intensity is not None:
+                checks.append({"check": "intensity <= max", "limit": lim.max_intensity, "value": result["intensity"], "ok": result["intensity"] <= lim.max_intensity})
+        if checks:
+            result["checks"] = checks
+            result["all_ok"] = all(c["ok"] for c in checks)
+        return result
 
     # --- modal dialogs ----------------------------------------------------------------
 

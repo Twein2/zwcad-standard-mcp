@@ -4,6 +4,9 @@ from abc import ABC, abstractmethod
 from typing import Any, Iterable
 
 from zwcad_standard_mcp.models import (
+    DimStyleSpec,
+    HatchRequest,
+    TextStyleSpec,
     EntityCreateSpec,
     EntityFilter,
     EntityQuerySpec,
@@ -187,6 +190,29 @@ class CadAdapter(ABC):
 
         Returns ``{"changed", "failed", "failures_sample", "remaining"}``.
         """
+        raise NotImplementedError
+
+    # --- Annotation styles, hatching, areas ---------------------------------------
+
+    def ensure_text_style(self, spec: "TextStyleSpec") -> dict:
+        raise NotImplementedError
+
+    def ensure_dim_style(self, spec: "DimStyleSpec") -> dict:
+        raise NotImplementedError
+
+    def style_exists(self, kind: str, name: str) -> bool:
+        """kind: 'text' or 'dim'."""
+        raise NotImplementedError
+
+    def create_hatch(self, request: "HatchRequest") -> dict:
+        raise NotImplementedError
+
+    def curve_areas(self, handles: list[str]) -> dict[str, dict]:
+        """``{handle: {"success", "type", "closed", "area", "layer"}}`` in drawing units."""
+        raise NotImplementedError
+
+    def drawing_units(self) -> int:
+        """INSUNITS value (4 = mm, 5 = cm, 6 = m, 0 = unitless)."""
         raise NotImplementedError
 
     # --- Modal dialog handling ------------------------------------------------------

@@ -43,7 +43,7 @@ MCP Python SDK.
 | Fear of accidental changes or deletions | dry-run by default, per-call `confirm`, second confirmation for delete/save, undo marks |
 | ZWCAD dialogs block automation | `list_cad_dialogs`, `dismiss_cad_dialog`, dialog guard |
 
-## Tools (44)
+## Tools (48)
 
 **System**: `diagnose_cad`, `get_cad_app_info`, `audit_drawing`, `list_cad_dialogs`, `dismiss_cad_dialog`
 
@@ -58,6 +58,10 @@ merge, purge; see `examples/layer_standard_geodetic_map.json`)
 - Change: `update_entity_properties`, `update_entities_by_filter`, `normalize_selected_entities`,
   `transform_entities`, `delete_entities`
 - Text: `update_text_entities` (set, find/replace, strip MText formatting, repair UTF-8 read as cp1250)
+
+**Annotation and areas**: `ensure_text_styles` (TrueType, Polish characters), `ensure_dim_styles` (e.g. cm
+drawing dimensioned in metres), `create_hatch` (islands, layer, area), `area_takeoff` (site balance: plot,
+buildings, paving, biologically active area, intensity, checks against MPZP limits)
 
 **Drawing**: `create_entities_batch`. Supports lines, circles, arcs, lightweight polylines, text, MText, block
 references, and aligned, rotated, radial and diametric dimensions.
