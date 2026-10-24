@@ -25,6 +25,14 @@ def _win32() -> tuple[Any, Any] | None:
     return win32gui, win32process
 
 
+def _is_push_button(win32gui: Any, hwnd: int) -> bool:
+    """True for visible push buttons only (not checkboxes, radio buttons or group boxes)."""
+    if win32gui.GetClassName(hwnd) != "Button" or not win32gui.IsWindowVisible(hwnd):
+        return False
+    style = win32gui.GetWindowLong(hwnd, -16)  # GWL_STYLE
+    return (style & 0x0F) in (0x00, 0x01)  # BS_PUSHBUTTON, BS_DEFPUSHBUTTON
+
+
 def find_process_dialogs(main_hwnd: int | None = None, pid: int | None = None) -> list[dict]:
     """List visible top-level dialog windows that belong to the ZWCAD process.
 
@@ -50,9 +58,9 @@ def find_process_dialogs(main_hwnd: int | None = None, pid: int | None = None) -
 
         def _child(child: int, _: Any) -> bool:
             try:
-                if win32gui.GetClassName(child) == "Button":
+                if _is_push_button(win32gui, child):
                     text = win32gui.GetWindowText(child)
-                    if text:
+                    if text and text not in texts:
                         texts.append(text)
             except Exception:
                 pass
@@ -132,7 +140,7 @@ def click_dialog_button(hwnd: int, button_text: str) -> bool:
 
     def _child(child: int, _: Any) -> bool:
         try:
-            if win32gui.GetClassName(child) == "Button" and _clean(win32gui.GetWindowText(child)) == _clean(button_text):
+            if _is_push_button(win32gui, child) and _clean(win32gui.GetWindowText(child)) == _clean(button_text):
                 target.append(child)
                 return False
         except Exception:
