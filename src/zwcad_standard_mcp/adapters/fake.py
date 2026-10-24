@@ -8,6 +8,7 @@ from typing import Any
 from zwcad_standard_mcp.errors import EntityNotFoundError, ValidationError
 from zwcad_standard_mcp.models import (
     EntityCreateSpec,
+    EntityFilter,
     EntityQuerySpec,
     LayerSpec,
     PlotScopeRequest,
@@ -15,6 +16,7 @@ from zwcad_standard_mcp.models import (
 
 
 from .base import CadAdapter
+from .selection import dxf_name, matches
 
 
 class FakeCadAdapter(CadAdapter):
@@ -520,3 +522,50 @@ class FakeCadAdapter(CadAdapter):
 
     def end_undo(self) -> None:
         self.undo_depth = max(0, self.undo_depth - 1)
+
+    # --- filtered selection --------------------------------------------------------
+
+    def _filtered(self, flt: EntityFilter) -> list[dict[str, Any]]:
+        return [
+            entity
+            for entity in self.entities.values()
+            if matches(
+                flt,
+                object_name=entity.get("object_name", ""),
+                layer=entity.get("layer", "0"),
+                layout=entity.get("layout", "Model"),
+                color=entity.get("color"),
+                block_name=entity.get("block_name"),
+            )
+        ]
+
+    def count_entities(self, flt: EntityFilter, group_by: list[str] | None = None) -> dict:
+        found = self._filtered(flt)
+        result: dict[str, Any] = {"count": len(found), "elapsed_s": 0.0}
+        groups = set(group_by or [])
+        if "layer" in groups:
+            by_layer: dict[str, int] = {}
+            for entity in found:
+                by_layer[entity["layer"]] = by_layer.get(entity["layer"], 0) + 1
+            result["by_layer"] = by_layer
+        if "type" in groups:
+            by_type: dict[str, int] = {}
+            for entity in found:
+                name = dxf_name(entity.get("object_name", ""))
+                by_type[name] = by_type.get(name, 0) + 1
+            result["by_type"] = by_type
+        return result
+
+    def select_handles(self, flt: EntityFilter, limit: int) -> dict:
+        found = self._filtered(flt)
+        handles = [entity["handle"] for entity in found[:limit]]
+        return {"count": len(found), "handles": handles, "truncated": len(found) > len(handles)}
+
+    def update_entities_by_filter(self, flt: EntityFilter, properties: dict[str, Any]) -> dict:
+        found = self._filtered(flt)
+        for entity in found:
+            for key, value in properties.items():
+                if value is not None:
+                    entity[key] = value
+        return {"matched": len(found), "changed": len(found), "failed": 0, "failures_sample": [], "elapsed_s": 0.0}
+

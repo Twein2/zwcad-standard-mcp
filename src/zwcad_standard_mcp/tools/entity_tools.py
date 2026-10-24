@@ -2,7 +2,13 @@ from __future__ import annotations
 
 from typing import Any
 
-from zwcad_standard_mcp.models import EntityPropertyPatch, EntityQuerySpec, TransformRequest
+from zwcad_standard_mcp.models import (
+    EntityFilter,
+    EntityPropertyPatch,
+    EntityQuerySpec,
+    FilteredPropertyPatch,
+    TransformRequest,
+)
 from zwcad_standard_mcp.services import CadService
 
 from .common import invoke
@@ -65,3 +71,31 @@ def register_entity_tools(mcp: Any, service: CadService) -> None:
     ) -> dict:
         """批量删除对象。必须先 dry_run 预览，再以 dry_run=false、confirm=true 且 second_confirm=true 执行（双重确认）。"""
         return invoke(service.delete_entities, handles, dry_run, confirm, second_confirm)
+
+    @mcp.tool()
+    def count_entities(filter: EntityFilter, group_by: list[str] | None = None) -> dict:
+        """Count entities with a CAD-side selection filter (fast on large drawings).
+
+        filter: DXF entity names (POINT, TEXT, LWPOLYLINE ...), layer names/wildcards,
+        ACI color, block names, space (model/paper/all). group_by: ["layer"] and/or ["type"].
+        """
+        return invoke(service.count_entities, filter, group_by)
+
+    @mcp.tool()
+    def select_entities(filter: EntityFilter, limit: int = 200) -> dict:
+        """Return the total count and up to `limit` handles of entities matching a CAD-side filter."""
+        return invoke(service.select_entities, filter, limit)
+
+    @mcp.tool()
+    def update_entities_by_filter(
+        patch: FilteredPropertyPatch,
+        dry_run: bool = True,
+        confirm: bool = False,
+    ) -> dict:
+        """Bulk change layer/color/linetype/linetype scale/lineweight of every entity matching a filter.
+
+        dry_run=true returns the match count per layer; dry_run=false and confirm=true applies it in one
+        undo group without per-entity snapshots (thousands of entities per call).
+        """
+        return invoke(service.update_entities_by_filter, patch, dry_run, confirm)
+

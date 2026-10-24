@@ -4,6 +4,7 @@ import contextlib
 import math
 import os
 import sys
+import time
 import uuid
 from collections import Counter
 from pathlib import Path
@@ -12,18 +13,22 @@ from typing import Any, Iterable, Iterator
 from zwcad_standard_mcp.errors import (
     CadConnectionError,
     EntityNotFoundError,
+    ModalDialogError,
     NoActiveDocumentError,
     UnsupportedOperationError,
     ValidationError,
 )
 from zwcad_standard_mcp.models import (
     EntityCreateSpec,
+    EntityFilter,
     EntityQuerySpec,
     LayerSpec,
     PlotScopeRequest,
 )
 
 from .base import CadAdapter
+from .dialogs import DialogWatchdog, click_dialog_button, find_process_dialogs
+from .selection import _wild, build_filter, dxf_name
 
 
 _OBJECT_ALIASES = {
@@ -48,9 +53,25 @@ _OBJECT_ALIASES = {
 class ComCadAdapter(CadAdapter):
     """ZWCAD Standard adapter using the public ActiveX/COM automation interface."""
 
-    def __init__(self, prog_id: str = "ZWCAD.Application", auto_start: bool = False) -> None:
+    # System variables set while opening or plotting so that ZWCAD does not stop on
+    # informational dialogs (proxy notice, xref notification, background plotting).
+    GUARD_SYSVARS: tuple[tuple[str, Any], ...] = (
+        ("PROXYNOTICE", 0),
+        ("XREFNOTIFY", 0),
+        ("BACKGROUNDPLOT", 0),
+    )
+
+    def __init__(
+        self,
+        prog_id: str = "ZWCAD.Application",
+        auto_start: bool = False,
+        auto_dismiss_dialogs: bool = True,
+    ) -> None:
         self.prog_id = prog_id
         self.auto_start = auto_start
+        self.auto_dismiss_dialogs = auto_dismiss_dialogs
+        self.last_dialog_report: dict | None = None
+        self._main_hwnd: int | None = None
         self._app: Any | None = None
         self._pythoncom: Any | None = None
         self._win32_client: Any | None = None
@@ -101,6 +122,10 @@ class ComCadAdapter(CadAdapter):
                 raise CadConnectionError(
                     f"Cannot start ZWCAD via COM ProgID '{self.prog_id}'."
                 ) from second_error
+        try:
+            self._main_hwnd = int(self._app.HWND)
+        except Exception:
+            pass
         return self._app
 
     def _doc(self) -> Any:
@@ -379,6 +404,162 @@ class ComCadAdapter(CadAdapter):
         finally:
             self.end_undo()
 
+    # ------------------------------------------------------------------ dialogs
+
+    def list_dialogs(self) -> list[dict]:
+        # Uses only Win32 window enumeration, so it also works while a COM call is blocked.
+        if self._main_hwnd is None:
+            try:
+                self._connect()
+            except Exception:
+                return []
+        return find_process_dialogs(self._main_hwnd)
+
+    def dismiss_dialog(self, title_contains: str, button: str) -> dict:
+        for dialog in self.list_dialogs():
+            if title_contains.lower() in str(dialog.get("title", "")).lower():
+                ok = click_dialog_button(dialog["hwnd"], button)
+                return {"success": ok, "title": dialog.get("title"), "button": button,
+                        "buttons": dialog.get("buttons")}
+        return {"success": False, "error": f"No open dialog with title containing '{title_contains}'."}
+
+    @contextlib.contextmanager
+    def _dialog_guard(self, doc: Any | None = None) -> Iterator[DialogWatchdog]:
+        """Refuse to start when a dialog is already open, silence known prompts, watch for new ones."""
+        self._connect()
+        pending = find_process_dialogs(self._main_hwnd)
+        if pending:
+            titles = ", ".join(repr(d.get("title")) for d in pending)
+            raise ModalDialogError(f"ZWCAD shows a modal dialog: {titles}", pending)
+        target = doc
+        if target is None:
+            try:
+                target = self._app.ActiveDocument
+            except Exception:
+                target = None
+        saved: dict[str, Any] = {}
+        if target is not None:
+            for name, value in self.GUARD_SYSVARS:
+                try:
+                    old = target.GetVariable(name)
+                    if old != value:
+                        target.SetVariable(name, value)
+                        saved[name] = old
+                except Exception:
+                    pass  # variable unknown in this ZWCAD build
+        watchdog = DialogWatchdog(self._main_hwnd, auto_dismiss=self.auto_dismiss_dialogs)
+        try:
+            with watchdog:
+                yield watchdog
+        finally:
+            for name, old in saved.items():
+                try:
+                    target.SetVariable(name, old)
+                except Exception:
+                    pass
+            self.last_dialog_report = {**watchdog.report(), "sysvars_overridden": sorted(saved)}
+
+    # ---------------------------------------------------------- filtered selection
+
+    @contextlib.contextmanager
+    def _selection(self, doc: Any) -> Iterator[Any]:
+        selection = doc.SelectionSets.Add(f"ZWCAD_MCP_{uuid.uuid4().hex[:10]}")
+        try:
+            yield selection
+        finally:
+            try:
+                selection.Delete()
+            except Exception:
+                pass
+
+    def _select(self, selection: Any, flt: EntityFilter) -> int:
+        codes, values = build_filter(flt)
+        with contextlib.suppress(Exception):
+            selection.Clear()
+        origin = self._point([0, 0, 0])
+        if codes:
+            filter_type = self._win32_client.VARIANT(
+                self._pythoncom.VT_ARRAY | self._pythoncom.VT_I2, tuple(int(c) for c in codes)
+            )
+            filter_data = self._win32_client.VARIANT(
+                self._pythoncom.VT_ARRAY | self._pythoncom.VT_VARIANT, tuple(values)
+            )
+            selection.Select(5, origin, origin, filter_type, filter_data)
+        else:
+            selection.Select(5, origin, origin)
+        return int(selection.Count)
+
+    def _layer_names(self, doc: Any) -> list[str]:
+        return [str(self._safe_get(layer, "Name", "")) for layer in self._iter_collection(doc.Layers)]
+
+    def count_entities(self, flt: EntityFilter, group_by: list[str] | None = None) -> dict:
+        doc = self._doc()
+        started = time.monotonic()
+        result: dict[str, Any] = {}
+        with self._selection(doc) as selection:
+            result["count"] = self._select(selection, flt)
+            groups = set(group_by or [])
+            if "layer" in groups and result["count"]:
+                names = [n for n in self._layer_names(doc) if not flt.layers or _wild(n, flt.layers)]
+                by_layer = {}
+                for name in names:
+                    # Escape CAD wildcard characters in real layer names.
+                    pattern = "".join("`" + ch if ch in "#@.*?~[]-," else ch for ch in name)
+                    count = self._select(selection, flt.model_copy(update={"layers": [pattern]}))
+                    if count:
+                        by_layer[name] = count
+                result["by_layer"] = dict(sorted(by_layer.items(), key=lambda kv: -kv[1]))
+            if "type" in groups and result["count"]:
+                self._select(selection, flt)
+                counter: Counter[str] = Counter()
+                for entity in self._iter_collection(selection):
+                    counter[dxf_name(str(self._safe_get(entity, "ObjectName", "")))] += 1
+                result["by_type"] = dict(counter.most_common())
+        result["elapsed_s"] = round(time.monotonic() - started, 3)
+        return result
+
+    def select_handles(self, flt: EntityFilter, limit: int) -> dict:
+        doc = self._doc()
+        with self._selection(doc) as selection:
+            count = self._select(selection, flt)
+            handles = []
+            for index, entity in enumerate(self._iter_collection(selection)):
+                if index >= limit:
+                    break
+                handles.append(str(self._safe_get(entity, "Handle", "")))
+        return {"count": count, "handles": handles, "truncated": count > len(handles)}
+
+    def update_entities_by_filter(self, flt: EntityFilter, properties: dict[str, Any]) -> dict:
+        mapping = {
+            "layer": "Layer",
+            "color": "Color",
+            "linetype": "Linetype",
+            "linetype_scale": "LinetypeScale",
+            "lineweight": "Lineweight",
+        }
+        doc = self._doc()
+        started = time.monotonic()
+        changed = 0
+        failures: list[dict] = []
+        with self._undo_group(), self._selection(doc) as selection:
+            matched = self._select(selection, flt)
+            for entity in self._iter_collection(selection):
+                try:
+                    for key, value in properties.items():
+                        if value is not None:
+                            setattr(entity, mapping[key], value)
+                    changed += 1
+                except Exception as exc:
+                    if len(failures) < 20:
+                        failures.append({"handle": str(self._safe_get(entity, "Handle", "")), "error": str(exc)})
+        return {
+            "matched": matched,
+            "changed": changed,
+            "failed": matched - changed,
+            "failures_sample": failures,
+            "elapsed_s": round(time.monotonic() - started, 3),
+        }
+
     def diagnose(self) -> dict:
         checks: list[dict] = []
         try:
@@ -471,10 +652,14 @@ class ComCadAdapter(CadAdapter):
         if not target.exists():
             raise ValidationError(f"File does not exist: {path}")
         try:
-            doc = app.Documents.Open(str(target), read_only)
+            with self._dialog_guard():
+                doc = app.Documents.Open(str(target), read_only)
+        except ModalDialogError:
+            raise
         except Exception as exc:
             raise ValidationError(f"Cannot open document: {path}") from exc
         return {
+            "dialogs": self.last_dialog_report,
             "name": str(self._safe_get(doc, "Name", "")),
             "full_name": str(self._safe_get(doc, "FullName", "")),
             "path": str(self._safe_get(doc, "Path", "")),
@@ -1194,8 +1379,16 @@ class ComCadAdapter(CadAdapter):
                 config = plot_configuration or str(
                     self._safe_get(self._safe_get(doc, "ActiveLayout"), "ConfigName", "")
                 )
-                doc.Plot.PlotToFile(str(file_path), config)
+                with self._dialog_guard(doc):
+                    plotted = doc.Plot.PlotToFile(str(file_path), config)
+                exists = file_path.exists() and file_path.stat().st_size > 0
+                if plotted is False or not exists:
+                    raise RuntimeError(
+                        f"PlotToFile returned {plotted!r}; output file "
+                        f"{'missing' if not file_path.exists() else 'empty'}: {file_path}"
+                    )
                 results.append({
+                    "dialogs": self.last_dialog_report,
                     "success": True,
                     "layout": name,
                     "file_path": str(file_path),

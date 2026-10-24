@@ -35,6 +35,40 @@ class EntityCreateSpec(BaseModel):
     layer: str = "0"
 
 
+class EntityFilter(BaseModel):
+    """CAD-side selection filter (evaluated by ZWCAD, not by iterating in Python).
+
+    Values follow DXF conventions: entity types are DXF names (LINE, LWPOLYLINE, TEXT,
+    MTEXT, INSERT, POINT, HATCH, DIMENSION ...); layer names accept CAD wildcards
+    (``*``, ``?``, ``#``, ``~`` and comma-separated lists).
+    """
+
+    entity_types: list[str] | None = Field(default=None, description="DXF entity names, e.g. ['POINT', 'TEXT']")
+    layers: list[str] | None = Field(default=None, description="Layer names or wildcard patterns")
+    color: int | None = Field(default=None, ge=0, le=256, description="ACI color; 256 = ByLayer, 0 = ByBlock")
+    block_names: list[str] | None = Field(default=None, description="Block names for INSERT entities")
+    space: Literal["model", "paper", "all"] = "model"
+
+    @field_validator("entity_types")
+    @classmethod
+    def upper_types(cls, value: list[str] | None) -> list[str] | None:
+        if value is None:
+            return None
+        cleaned = [item.strip().upper() for item in value if item.strip()]
+        return cleaned or None
+
+
+class FilteredPropertyPatch(BaseModel):
+    """Bulk property change for every entity matching ``filter``."""
+
+    filter: EntityFilter
+    layer: str | None = None
+    color: int | None = Field(default=None, ge=0, le=256)
+    linetype: str | None = None
+    linetype_scale: float | None = Field(default=None, gt=0)
+    lineweight: int | None = None
+
+
 class EntityQuerySpec(BaseModel):
     scope: Scope = "model"
     entity_type: str | None = None

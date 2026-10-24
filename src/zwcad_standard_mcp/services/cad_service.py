@@ -18,7 +18,9 @@ from zwcad_standard_mcp.errors import (
 from zwcad_standard_mcp.models import (
     BlockAttributePatch,
     EntityCreateSpec,
+    EntityFilter,
     EntityPropertyPatch,
+    FilteredPropertyPatch,
     EntityQuerySpec,
     LayerSpec,
     PlotScopeRequest,
@@ -79,6 +81,7 @@ def _execute_batch_job(
     adapter = ComCadAdapter(
         prog_id=settings.prog_id if hasattr(settings, "prog_id") else "ZWCAD.Application",
         auto_start=getattr(settings, "auto_start_cad", False),
+        auto_dismiss_dialogs=getattr(settings, "auto_dismiss_dialogs", True),
     )
     cfg = config or {}
     out_dir = output_dir or ""
@@ -419,6 +422,68 @@ class CadService:
     def get_entity_details(self, handles: list[str]) -> dict:
         self._limit(handles, "handles")
         return {"success": True, **self._summary(self.adapter.get_entity_details(handles))}
+
+    # --- CAD-side filtered selection ------------------------------------------------
+
+    def count_entities(self, flt: EntityFilter, group_by: list[str] | None = None) -> dict:
+        unknown = set(group_by or []) - {"layer", "type"}
+        if unknown:
+            raise ValidationError(f"group_by supports 'layer' and 'type' only, got: {sorted(unknown)}")
+        return {"success": True, "filter": flt.model_dump(exclude_none=True), **self.adapter.count_entities(flt, group_by)}
+
+    def select_entities(self, flt: EntityFilter, limit: int = 200) -> dict:
+        if limit < 1:
+            raise ValidationError("limit must be at least 1.")
+        limit = min(limit, self.settings.max_query_results)
+        return {"success": True, "filter": flt.model_dump(exclude_none=True), **self.adapter.select_handles(flt, limit)}
+
+    def update_entities_by_filter(
+        self, patch: FilteredPropertyPatch, dry_run: bool = True, confirm: bool = False
+    ) -> dict:
+        properties = patch.model_dump(exclude={"filter"}, exclude_none=True)
+        if not properties:
+            raise ValidationError("No properties to change were given.")
+        if "layer" in properties:
+            existing = {item["name"].lower() for item in self.adapter.list_layers(detail=False)}
+            if properties["layer"].lower() not in existing:
+                raise ValidationError(f"Target layer does not exist: {properties['layer']} (create it with ensure_layers).")
+        preview = self.adapter.count_entities(patch.filter, ["layer"])
+        if preview["count"] > self.settings.max_batch_size:
+            raise BatchLimitError(
+                f"Filter matches {preview['count']} entities; maximum is {self.settings.max_batch_size} "
+                "(raise ZWCAD_MCP_MAX_BATCH_SIZE or narrow the filter)."
+            )
+        if dry_run:
+            return {
+                "success": True,
+                "dry_run": True,
+                "filter": patch.filter.model_dump(exclude_none=True),
+                "matched": preview["count"],
+                "by_layer": preview.get("by_layer", {}),
+                "set": properties,
+            }
+        rejection = require_permission(PermissionLevel.MODIFY, confirm=confirm)
+        if rejection:
+            return rejection
+        self._ensure_write()
+        result = self.adapter.update_entities_by_filter(patch.filter, properties)
+        return {"success": result["failed"] == 0, "dry_run": False, "set": properties, **result}
+
+    # --- modal dialogs ----------------------------------------------------------------
+
+    def list_cad_dialogs(self) -> dict:
+        dialogs = self.adapter.list_dialogs()
+        return {
+            "success": True,
+            "count": len(dialogs),
+            "dialogs": [{"title": d.get("title"), "buttons": d.get("buttons")} for d in dialogs],
+        }
+
+    def dismiss_cad_dialog(self, title_contains: str, button: str, confirm: bool = False) -> dict:
+        rejection = require_permission(PermissionLevel.MODIFY, confirm=confirm)
+        if rejection:
+            return rejection
+        return self.adapter.dismiss_dialog(title_contains, button)
 
     def update_entity_properties(self, patch: EntityPropertyPatch, dry_run: bool = True, confirm: bool = False) -> dict:
         self._limit(patch.handles, "handles")

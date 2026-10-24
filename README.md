@@ -1,5 +1,19 @@
 # ZWCAD Standard MCP
 
+> **Fork notes (Twein2/zwcad-standard-mcp)** — changes on top of qwtao321/zwcad-standard-mcp, tested on
+> ZWCAD Standard 2024 (PL) in architectural work. Original work © qwtao321, MIT.
+>
+> - `count_entities`, `select_entities`, `update_entities_by_filter`: CAD-side filtered selection sets
+>   (DXF type, layer wildcards, ACI color, block name, space). Counting is instant and bulk changes run
+>   without per-entity snapshots, so drawings with tens of thousands of entities work within client timeouts.
+> - Dialog guard for `open_document`, `plot_layouts` and batch jobs: refuses to start while ZWCAD shows a modal
+>   dialog (`MODAL_DIALOG_OPEN`), sets `PROXYNOTICE`/`XREFNOTIFY`/`BACKGROUNDPLOT` to 0 for the call and restores
+>   them, answers known-safe dialogs (unresolved references → "Ignore…", proxy notice → OK) and reports every
+>   dialog seen. Disable auto-answers with `ZWCAD_MCP_AUTO_DISMISS_DIALOGS=false`.
+> - `list_cad_dialogs` / `dismiss_cad_dialog`: see and answer blocking dialogs (works while a COM call is blocked).
+> - `plot_layouts` verifies the output file and `PlotToFile` result instead of reporting success blindly.
+> - Defaults: `ZWCAD_MCP_MAX_BATCH_SIZE` and `ZWCAD_MCP_MAX_QUERY_RESULTS` = 10000; `activate_layout` implemented.
+
 面向 **中望 CAD 标准版** 的本地 MCP Server。它不是为了把所有 COM 方法机械地暴露给大模型，而是围绕 CAD 用户常见痛点，提供一组中等粒度、可批量、可预览、可验证的工具。
 
 底层使用 ZWCAD 对外公开的 ActiveX/COM API，通过 `pywin32` 连接本机正在运行的 ZWCAD；MCP 层使用官方 Python SDK。
@@ -259,6 +273,7 @@ python -m zwcad_standard_mcp.server
 | `ZWCAD_MCP_AUTO_START` | `false` | 找不到运行实例时是否自动启动 ZWCAD |
 | `ZWCAD_MCP_MAX_QUERY_RESULTS` | `10000` | 单次查询最大返回数量 |
 | `ZWCAD_MCP_MAX_BATCH_SIZE` | `10000` | 单次批量写入最大数量 |
+| `ZWCAD_MCP_AUTO_DISMISS_DIALOGS` | `true` | Auto-answer known-safe ZWCAD dialogs during open/plot |
 | `ZWCAD_MCP_TRANSPORT` | `stdio` | `stdio` 或 `streamable-http` |
 | `ZWCAD_MCP_ADAPTER` | `com` | `com`；测试时可设为 `fake` |
 | `ZWCAD_MCP_LOG_LEVEL` | `INFO` | 日志级别 |
