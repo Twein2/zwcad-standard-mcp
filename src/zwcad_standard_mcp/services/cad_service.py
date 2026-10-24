@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import itertools
+import json
+import time
 import threading
 import uuid
 from datetime import datetime, timezone
@@ -22,10 +24,15 @@ from zwcad_standard_mcp.models import (
     EntityPropertyPatch,
     FilteredPropertyPatch,
     EntityQuerySpec,
+    LayerMapRequest,
     LayerSpec,
+    LayerStandard,
     PlotScopeRequest,
+    TextUpdateRequest,
     TransformRequest,
 )
+from zwcad_standard_mcp.adapters.selection import _wild
+from zwcad_standard_mcp import textops
 from zwcad_standard_mcp.permissions.policy import PermissionLevel
 from zwcad_standard_mcp.permissions_bridge import require_permission
 
@@ -468,6 +475,220 @@ class CadService:
         self._ensure_write()
         result = self.adapter.update_entities_by_filter(patch.filter, properties)
         return {"success": result["failed"] == 0, "dry_run": False, "set": properties, **result}
+
+    # --- layer standard mapping -----------------------------------------------------
+
+    _PROTECTED_LAYERS = {"defpoints"}
+    _SECONDS_PER_MOVED_ENTITY = 0.017  # measured on ZWCAD 2024 Standard (FINDINGS #31)
+
+    def _load_layer_standard(self, request: LayerMapRequest) -> LayerStandard:
+        if request.standard is not None and request.standard_path:
+            raise ValidationError("Give either 'standard' or 'standard_path', not both.")
+        if request.standard is not None:
+            standard = request.standard
+        elif request.standard_path:
+            path = Path(request.standard_path)
+            if not path.is_file():
+                raise ValidationError(f"Layer standard file not found: {path}")
+            try:
+                standard = LayerStandard.model_validate(json.loads(path.read_text(encoding="utf-8-sig")))
+            except Exception as exc:
+                raise ValidationError(f"Invalid layer standard file {path}: {exc}") from exc
+        else:
+            raise ValidationError("A layer standard is required ('standard' or 'standard_path').")
+        if not standard.rules:
+            raise ValidationError("The layer standard has no mapping rules.")
+        return standard
+
+    def _plan_layer_map(self, standard: LayerStandard) -> dict:
+        layers = [item["name"] for item in self.adapter.list_layers(detail=False)]
+        existing = {name.lower(): name for name in layers}
+        counts = self.adapter.count_entities(EntityFilter(space="all"), ["layer"]).get("by_layer", {})
+        counts_ci = {name.lower(): count for name, count in counts.items()}
+
+        mapped: dict[str, str] = {}
+        unmatched: dict[str, int] = {}
+        for name in layers:
+            low = name.lower()
+            if low in self._PROTECTED_LAYERS or "|" in name:
+                continue
+            rule = next((r for r in standard.rules if _wild(name, [r.source])), None)
+            if rule is None:
+                if counts_ci.get(low, 0):
+                    unmatched[name] = counts_ci[low]
+                continue
+            if low == rule.target.lower():
+                continue
+            mapped[name] = rule.target
+
+        by_target: dict[str, list[str]] = {}
+        for source, target in mapped.items():
+            by_target.setdefault(target, []).append(source)
+
+        steps: list[dict] = []
+        for target, sources in by_target.items():
+            renamed = None
+            if target.lower() not in existing:
+                candidates = [s for s in sources if s != "0"]
+                if candidates:
+                    renamed = max(candidates, key=lambda s: counts_ci.get(s.lower(), 0))
+            for source in sorted(sources, key=lambda s: (s != renamed, s.lower())):
+                steps.append(
+                    {
+                        "source": source,
+                        "target": target,
+                        "action": "rename" if source == renamed else "merge",
+                        "entities": counts_ci.get(source.lower(), 0),
+                    }
+                )
+
+        produced = {step["target"].lower() for step in steps if step["action"] == "rename"}
+        create = sorted(
+            {t for t in by_target if t.lower() not in existing and t.lower() not in produced}
+            | {spec.name for spec in standard.layers if spec.name.lower() not in existing and spec.name.lower() not in produced}
+        )
+        merge_entities = sum(step["entities"] for step in steps if step["action"] == "merge")
+        return {
+            "steps": steps,
+            "create_layers": create,
+            "unmatched_layers_with_entities": dict(sorted(unmatched.items(), key=lambda kv: -kv[1])),
+            "empty_layers": sorted(name for name in layers if not counts_ci.get(name.lower(), 0)),
+            "merge_entities": merge_entities,
+            "estimated_merge_s": round(merge_entities * self._SECONDS_PER_MOVED_ENTITY, 1),
+        }
+
+    def map_layers(self, request: LayerMapRequest, dry_run: bool = True, confirm: bool = False) -> dict:
+        standard = self._load_layer_standard(request)
+        plan = self._plan_layer_map(standard)
+        if dry_run:
+            return {
+                "success": True,
+                "dry_run": True,
+                "renames": sum(1 for s in plan["steps"] if s["action"] == "rename"),
+                "merges": sum(1 for s in plan["steps"] if s["action"] == "merge"),
+                **plan,
+            }
+        rejection = require_permission(PermissionLevel.MODIFY, confirm=confirm)
+        if rejection:
+            return rejection
+        self._ensure_write()
+        started = time.monotonic()
+        budget = request.time_budget_s
+        results: dict[str, Any] = {"renamed": [], "merged": [], "deleted": [], "delete_failed": [], "errors": []}
+
+        for step in (s for s in plan["steps"] if s["action"] == "rename"):
+            outcome = self.adapter.rename_layer(step["source"], step["target"])
+            (results["renamed"] if outcome.get("success") else results["errors"]).append(outcome)
+
+        specs = {spec.name.lower(): spec for spec in standard.layers}
+        for name in plan["create_layers"]:
+            specs.setdefault(name.lower(), LayerSpec(name=name))
+        if specs:
+            layer_results = self.adapter.ensure_layers(list(specs.values()))
+            results["errors"].extend(item for item in layer_results if not item.get("success"))
+            results["layers_ensured"] = len(layer_results)
+
+        incomplete: list[str] = []
+        for step in (s for s in plan["steps"] if s["action"] == "merge"):
+            left = budget - (time.monotonic() - started)
+            if left <= 1:
+                incomplete.append(step["source"])
+                continue
+            moved = self.adapter.move_layer_entities(step["source"], step["target"], left)
+            results["merged"].append({"source": step["source"], "target": step["target"], **moved})
+            if moved.get("remaining") or moved.get("failed"):
+                incomplete.append(step["source"])
+                continue
+            if request.purge_sources:
+                deleted = self.adapter.delete_layer(step["source"])
+                (results["deleted"] if deleted.get("success") else results["delete_failed"]).append(deleted)
+
+        if request.purge_unused and not incomplete:
+            for name in plan["empty_layers"]:
+                if name == "0" or name.lower() in self._PROTECTED_LAYERS or "|" in name:
+                    continue
+                if any(name.lower() == step["source"].lower() for step in plan["steps"]):
+                    continue
+                deleted = self.adapter.delete_layer(name)
+                (results["deleted"] if deleted.get("success") else results["delete_failed"]).append(deleted)
+
+        results["delete_failed"] = results["delete_failed"][:50]
+        return {
+            "success": not results["errors"] and not incomplete,
+            "dry_run": False,
+            "complete": not incomplete,
+            "incomplete_sources": incomplete,
+            "hint": "Run map_layers again to continue." if incomplete else None,
+            "deleted_count": len(results["deleted"]),
+            **{k: v for k, v in results.items() if k != "deleted"},
+            "deleted": [item["name"] for item in results["deleted"]],
+            "elapsed_s": round(time.monotonic() - started, 3),
+        }
+
+    # --- text editing -------------------------------------------------------------
+
+    def _new_text(self, request: TextUpdateRequest, item: dict) -> str:
+        text = item["text"]
+        if request.operation == "set":
+            return request.value or ""
+        if request.operation == "replace":
+            return textops.replace_text(
+                text, request.find or "", request.replacement, regex=request.regex, case_sensitive=request.case_sensitive
+            )
+        if request.operation == "strip_formatting":
+            return textops.strip_mtext_formatting(text) if item["type"] == "MTEXT" else text
+        return textops.repair_mojibake(text, request.wrong_codepage)
+
+    def update_text_entities(self, request: TextUpdateRequest, dry_run: bool = True, confirm: bool = False) -> dict:
+        allowed = {"TEXT", "MTEXT"}
+        flt = request.filter
+        if not flt.entity_types:
+            flt = flt.model_copy(update={"entity_types": sorted(allowed)})
+        elif set(flt.entity_types) - allowed:
+            raise ValidationError("update_text_entities works on TEXT and MTEXT only.")
+        if request.operation == "set" and request.value is None:
+            raise ValidationError("operation=set needs 'value'.")
+        if request.operation == "replace" and not request.find:
+            raise ValidationError("operation=replace needs 'find'.")
+        if request.operation == "repair_encoding":
+            try:
+                "".encode(request.wrong_codepage)
+            except LookupError as exc:
+                raise ValidationError(f"Unknown codepage: {request.wrong_codepage}") from exc
+
+        found = self.adapter.read_texts(flt, self.settings.max_batch_size)
+        if found["truncated"]:
+            raise BatchLimitError(
+                f"Filter matches {found['count']} texts; maximum is {self.settings.max_batch_size} (narrow the filter)."
+            )
+        try:
+            changes = [(item["handle"], new, item) for item in found["items"] if (new := self._new_text(request, item)) != item["text"]]
+        except Exception as exc:  # bad regex
+            raise ValidationError(f"Text operation failed: {exc}") from exc
+        sample = [{"handle": h, "type": item["type"], "before": item["text"], "after": new} for h, new, item in changes[:20]]
+        if dry_run:
+            return {
+                "success": True,
+                "dry_run": True,
+                "filter": flt.model_dump(exclude_none=True),
+                "matched": found["count"],
+                "would_change": len(changes),
+                "sample": sample,
+            }
+        rejection = require_permission(PermissionLevel.MODIFY, confirm=confirm)
+        if rejection:
+            return rejection
+        self._ensure_write()
+        result = self.adapter.write_texts([(h, new) for h, new, _ in changes], request.time_budget_s)
+        return {
+            "success": result["failed"] == 0 and result["remaining"] == 0,
+            "dry_run": False,
+            "matched": found["count"],
+            "to_change": len(changes),
+            **result,
+            "sample": sample[:5],
+            "hint": "Run again to continue." if result["remaining"] else None,
+        }
 
     # --- modal dialogs ----------------------------------------------------------------
 

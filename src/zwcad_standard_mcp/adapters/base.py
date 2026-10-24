@@ -163,6 +163,29 @@ class CadAdapter(ABC):
     def update_entities_by_filter(self, flt: EntityFilter, properties: dict[str, Any]) -> dict:
         """Apply ``properties`` to every matching entity without per-entity snapshots."""
 
+    # --- Layer mapping and text editing ----------------------------------------------
+
+    def rename_layer(self, old: str, new: str) -> dict:
+        raise NotImplementedError
+
+    def move_layer_entities(self, source: str, target: str, time_budget_s: float) -> dict:
+        """Move every entity on ``source`` (all spaces) to ``target``.
+
+        Returns ``{"matched", "moved", "failed", "remaining", "elapsed_s"}``; stops when the budget is spent.
+        """
+        raise NotImplementedError
+
+    def delete_layer(self, name: str) -> dict:
+        raise NotImplementedError
+
+    def read_texts(self, flt: EntityFilter, limit: int) -> dict:
+        """Return ``{"count", "items": [{"handle", "type", "text"}], "truncated"}`` for TEXT/MTEXT."""
+        raise NotImplementedError
+
+    def write_texts(self, changes: list[tuple[str, str]], time_budget_s: float) -> dict:
+        """Set TextString by handle. Returns ``{"changed", "failed", "failures_sample", "remaining"}``."""
+        raise NotImplementedError
+
     # --- Modal dialog handling ------------------------------------------------------
 
     def list_dialogs(self) -> list[dict]:

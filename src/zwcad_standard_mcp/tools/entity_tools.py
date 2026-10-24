@@ -8,6 +8,7 @@ from zwcad_standard_mcp.models import (
     EntityQuerySpec,
     FilteredPropertyPatch,
     TransformRequest,
+    TextUpdateRequest,
 )
 from zwcad_standard_mcp.services import CadService
 
@@ -85,6 +86,17 @@ def register_entity_tools(mcp: Any, service: CadService) -> None:
     def select_entities(filter: EntityFilter, limit: int = 200) -> dict:
         """Return the total count and up to `limit` handles of entities matching a CAD-side filter."""
         return invoke(service.select_entities, filter, limit)
+
+    @mcp.tool()
+    def update_text_entities(request: TextUpdateRequest, dry_run: bool = True, confirm: bool = False) -> dict:
+        """Bulk edit TEXT/MTEXT content selected by a CAD-side filter.
+
+        operation: set (value) | replace (find, replacement, regex, case_sensitive) | strip_formatting
+        (MText codes such as \\f \\H \\C, braces; keeps \\P paragraphs) | repair_encoding (UTF-8 text read
+        with an ANSI codepage, e.g. QGIS DXF "Ĺ‚" -> "ł"; wrong_codepage default cp1250).
+        dry_run=true returns match/change counts and a before/after sample.
+        """
+        return invoke(service.update_text_entities, request, dry_run, confirm)
 
     @mcp.tool()
     def update_entities_by_filter(

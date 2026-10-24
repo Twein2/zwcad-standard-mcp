@@ -28,7 +28,7 @@ from zwcad_standard_mcp.models import (
 
 from .base import CadAdapter
 from .dialogs import DialogWatchdog, click_dialog_button, find_process_dialogs
-from .selection import COMMON_DXF_TYPES, _wild, build_filter
+from .selection import COMMON_DXF_TYPES, _wild, build_filter, dxf_name, escape_layer_name
 
 
 _OBJECT_ALIASES = {
@@ -503,8 +503,7 @@ class ComCadAdapter(CadAdapter):
                 names = [n for n in self._layer_names(doc) if not flt.layers or _wild(n, flt.layers)]
                 by_layer = {}
                 for name in names:
-                    # Escape CAD wildcard characters in real layer names.
-                    pattern = "".join("`" + ch if ch in "#@.*?~[]-," else ch for ch in name)
+                    pattern = escape_layer_name(name)
                     count = self._select(selection, flt.model_copy(update={"layers": [pattern]}))
                     if count:
                         by_layer[name] = count
@@ -562,6 +561,95 @@ class ComCadAdapter(CadAdapter):
             "changed": changed,
             "failed": matched - changed,
             "failures_sample": failures,
+            "elapsed_s": round(time.monotonic() - started, 3),
+        }
+
+    # ---------------------------------------------------------- layer mapping / texts
+
+    def rename_layer(self, old: str, new: str) -> dict:
+        doc = self._doc()
+        with self._undo_group():
+            try:
+                doc.Layers.Item(old).Name = new
+                return {"success": True, "source": old, "target": new}
+            except Exception as exc:
+                return {"success": False, "source": old, "target": new, "error": str(exc)}
+
+    def move_layer_entities(self, source: str, target: str, time_budget_s: float) -> dict:
+        doc = self._doc()
+        started = time.monotonic()
+        moved = 0
+        failed = 0
+        failures: list[dict] = []
+        flt = EntityFilter(layers=[escape_layer_name(source)], space="all")
+        with self._undo_group(), self._selection(doc) as selection:
+            matched = self._select(selection, flt)
+            for entity in self._iter_collection(selection):
+                if time.monotonic() - started > time_budget_s:
+                    break
+                try:
+                    entity.Layer = target
+                    moved += 1
+                except Exception as exc:
+                    failed += 1
+                    if len(failures) < 10:
+                        failures.append({"handle": str(self._safe_get(entity, "Handle", "")), "error": str(exc)})
+        return {
+            "matched": matched,
+            "moved": moved,
+            "failed": failed,
+            "failures_sample": failures,
+            "remaining": matched - moved - failed,
+            "elapsed_s": round(time.monotonic() - started, 3),
+        }
+
+    def delete_layer(self, name: str) -> dict:
+        doc = self._doc()
+        try:
+            doc.Layers.Item(name).Delete()
+            return {"name": name, "success": True}
+        except Exception as exc:
+            return {"name": name, "success": False, "error": str(exc)}
+
+    def read_texts(self, flt: EntityFilter, limit: int) -> dict:
+        doc = self._doc()
+        items: list[dict] = []
+        with self._selection(doc) as selection:
+            count = self._select(selection, flt)
+            for index, entity in enumerate(self._iter_collection(selection)):
+                if index >= limit:
+                    break
+                items.append(
+                    {
+                        "handle": str(self._safe_get(entity, "Handle", "")),
+                        "type": dxf_name(str(self._safe_get(entity, "ObjectName", ""))),
+                        "text": str(self._safe_get(entity, "TextString", "")),
+                    }
+                )
+        return {"count": count, "items": items, "truncated": count > len(items)}
+
+    def write_texts(self, changes: list[tuple[str, str]], time_budget_s: float) -> dict:
+        doc = self._doc()
+        started = time.monotonic()
+        changed = 0
+        failures: list[dict] = []
+        done = 0
+        with self._undo_group():
+            for handle, text in changes:
+                if time.monotonic() - started > time_budget_s:
+                    break
+                done += 1
+                try:
+                    doc.HandleToObject(handle).TextString = text
+                    changed += 1
+                except Exception as exc:
+                    if len(failures) < 10:
+                        failures.append({"handle": handle, "error": str(exc)})
+        return {
+            "changed": changed,
+            "failed": done - changed,
+            "failures_sample": failures,
+            "remaining": len(changes) - done,
             "elapsed_s": round(time.monotonic() - started, 3),
         }
 

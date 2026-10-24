@@ -142,3 +142,39 @@ class TransformRequest(BaseModel):
     def unique_handles(cls, value: list[str]) -> list[str]:
         return list(dict.fromkeys(handle.strip() for handle in value if handle.strip()))
 
+
+
+class LayerMapRule(BaseModel):
+    """Map every source layer matching ``source`` (CAD wildcards, comma lists) to ``target``."""
+
+    source: str = Field(min_length=1, description="Source layer name or wildcard, e.g. 'EGB_*' or 'OT*,KR*'")
+    target: str = Field(min_length=1, description="Target (office standard) layer name")
+
+
+class LayerStandard(BaseModel):
+    """Office layer standard: target layer definitions plus mapping rules (first matching rule wins)."""
+
+    layers: list[LayerSpec] = Field(default_factory=list)
+    rules: list[LayerMapRule] = Field(default_factory=list)
+
+
+class LayerMapRequest(BaseModel):
+    standard: LayerStandard | None = Field(default=None, description="Inline standard")
+    standard_path: str | None = Field(default=None, description="Path to a JSON file with the same structure")
+    purge_sources: bool = Field(default=True, description="Delete source layers once they are empty")
+    purge_unused: bool = Field(default=False, description="Also try to delete every other empty layer")
+    time_budget_s: float = Field(default=45.0, gt=1, le=55, description="Stop moving entities after this time")
+
+
+class TextUpdateRequest(BaseModel):
+    """Bulk edit of TEXT/MTEXT content selected by a CAD-side filter."""
+
+    filter: EntityFilter = Field(default_factory=lambda: EntityFilter(entity_types=["TEXT", "MTEXT"]))
+    operation: Literal["set", "replace", "strip_formatting", "repair_encoding"]
+    value: str | None = Field(default=None, description="New text for operation=set")
+    find: str | None = Field(default=None, description="Text or regex to find for operation=replace")
+    replacement: str = Field(default="", description="Replacement for operation=replace")
+    regex: bool = False
+    case_sensitive: bool = True
+    wrong_codepage: str = Field(default="cp1250", description="Codepage the UTF-8 bytes were wrongly read with")
+    time_budget_s: float = Field(default=45.0, gt=1, le=55)

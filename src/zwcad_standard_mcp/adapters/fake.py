@@ -561,6 +561,42 @@ class FakeCadAdapter(CadAdapter):
         handles = [entity["handle"] for entity in found[:limit]]
         return {"count": len(found), "handles": handles, "truncated": len(found) > len(handles)}
 
+    def rename_layer(self, old: str, new: str) -> dict:
+        if old not in self.layers:
+            return {"success": False, "source": old, "target": new, "error": "layer not found"}
+        data = self.layers.pop(old)
+        data["name"] = new
+        self.layers[new] = data
+        for entity in self.entities.values():
+            if entity.get("layer") == old:
+                entity["layer"] = new
+        return {"success": True, "source": old, "target": new}
+
+    def move_layer_entities(self, source: str, target: str, time_budget_s: float) -> dict:
+        found = [e for e in self.entities.values() if e.get("layer") == source]
+        for entity in found:
+            entity["layer"] = target
+        return {"matched": len(found), "moved": len(found), "failed": 0, "failures_sample": [], "remaining": 0, "elapsed_s": 0.0}
+
+    def delete_layer(self, name: str) -> dict:
+        if name == "0" or any(e.get("layer") == name for e in self.entities.values()):
+            return {"name": name, "success": False, "error": "layer is in use"}
+        self.layers.pop(name, None)
+        return {"name": name, "success": True}
+
+    def read_texts(self, flt: EntityFilter, limit: int) -> dict:
+        found = self._filtered(flt)
+        items = [
+            {"handle": e["handle"], "type": dxf_name(e.get("object_name", "")), "text": e.get("text", "")}
+            for e in found[:limit]
+        ]
+        return {"count": len(found), "items": items, "truncated": len(found) > len(items)}
+
+    def write_texts(self, changes: list[tuple[str, str]], time_budget_s: float) -> dict:
+        for handle, text in changes:
+            self._entity(handle)["text"] = text
+        return {"changed": len(changes), "failed": 0, "failures_sample": [], "remaining": 0, "elapsed_s": 0.0}
+
     def update_entities_by_filter(self, flt: EntityFilter, properties: dict[str, Any]) -> dict:
         found = self._filtered(flt)
         for entity in found:
