@@ -10,7 +10,7 @@ from .common import invoke
 def register_file_management_tools(mcp: Any, service: CadService) -> None:
     @mcp.tool()
     def scan_cad_folder(path: str, recursive: bool = False) -> dict:
-        """扫描本地文件夹中的 CAD 文件（.dwg/.dxf/.dwt），返回文件列表。"""
+        """List CAD files (.dwg/.dxf/.dwt) in a local folder."""
         return invoke(service.scan_cad_folder, path, recursive)
 
     @mcp.tool()
@@ -20,7 +20,7 @@ def register_file_management_tools(mcp: Any, service: CadService) -> None:
         dry_run: bool = True,
         confirm: bool = False,
     ) -> dict:
-        """在 ZWCAD 中打开指定路径的 DWG/DXF 文件；dry_run=true 仅预览，dry_run=false 且 confirm=true 才真正打开。"""
+        """Open a DWG/DXF file in ZWCAD. dry_run=true previews; dry_run=false with confirm=true opens it (with the dialog guard)."""
         return invoke(service.open_document, path, read_only, dry_run, confirm)
 
     @mcp.tool()
@@ -30,7 +30,7 @@ def register_file_management_tools(mcp: Any, service: CadService) -> None:
         dry_run: bool = True,
         confirm: bool = False,
     ) -> dict:
-        """关闭指定名称的已打开图纸；默认不保存，关闭前需 confirm=true。"""
+        """Close an open drawing by name (does not save by default). Requires confirm=true."""
         return invoke(service.close_document, name, save_changes, dry_run, confirm)
 
     @mcp.tool()
@@ -43,10 +43,10 @@ def register_file_management_tools(mcp: Any, service: CadService) -> None:
         dry_run: bool = True,
         confirm: bool = False,
     ) -> dict:
-        """创建一个批量任务并返回任务 ID。若传入 files，则在后台自动执行该批量任务（默认 operation=plot_pdf）。真实执行需 confirm=true。"""
+        """Create a batch job and return its id. With files given, runs it in the background (default operation=plot_pdf). Execution requires confirm=true."""
         return invoke(service.create_batch_job, total, files, operation, output_dir, config, dry_run, confirm)
 
     @mcp.tool()
     def get_batch_job_status(job_id: str) -> dict:
-        """查询批量任务的当前进度（total/finished/failed/status）。"""
+        """Return batch job progress (total/finished/failed/status)."""
         return invoke(service.get_batch_job_status, job_id)

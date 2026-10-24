@@ -17,17 +17,17 @@ from .common import invoke
 def register_entity_tools(mcp: Any, service: CadService) -> None:
     @mcp.tool()
     def get_selected_entities(limit: int = 200) -> dict:
-        """读取用户在 ZWCAD 中预先选中的实体，返回实体列表、选中句柄、合并包围盒、所在空间和是否为空选择。"""
+        """Read the entities the user pre-selected in ZWCAD: entity list, handles, combined bounding box, space and whether the selection is empty."""
         return invoke(service.get_selected_entities, limit)
 
     @mcp.tool()
     def query_entities(query: EntityQuerySpec) -> dict:
-        """按空间、实体类型、图层、文字内容或块名查询对象，适合批量检查与定位。"""
+        """Query entities by space, entity type, layer, text content or block name (iterates entities; on large drawings prefer count_entities/select_entities)."""
         return invoke(service.query_entities, query)
 
     @mcp.tool()
     def get_entity_details(handles: list[str]) -> dict:
-        """按句柄批量读取实体几何、通用属性、边界框和块属性。"""
+        """Read geometry, common properties, bounding box and block attributes of entities by handle."""
         return invoke(service.get_entity_details, handles)
 
     @mcp.tool()
@@ -36,7 +36,7 @@ def register_entity_tools(mcp: Any, service: CadService) -> None:
         dry_run: bool = True,
         confirm: bool = False,
     ) -> dict:
-        """批量修改实体图层、颜色、线型、线宽或可见性；dry_run=true 仅预览，dry_run=false 且 confirm=true 才执行。"""
+        """Change layer, color, linetype, lineweight or visibility of entities by handle. dry_run=true previews; dry_run=false with confirm=true executes."""
         return invoke(service.update_entity_properties, patch, dry_run, confirm)
 
     @mcp.tool()
@@ -47,7 +47,7 @@ def register_entity_tools(mcp: Any, service: CadService) -> None:
         dry_run: bool = True,
         confirm: bool = False,
     ) -> dict:
-        """将当前选择对象归一到目标图层，并可统一为 ByLayer；解决导入图纸属性混乱。dry_run=true 仅预览，dry_run=false 且 confirm=true 才执行。"""
+        """Move the current selection to a target layer and optionally set color/linetype to ByLayer (clean up imported drawings). dry_run=true previews; dry_run=false with confirm=true executes."""
         return invoke(
             service.normalize_selected_entities,
             target_layer,
@@ -59,7 +59,7 @@ def register_entity_tools(mcp: Any, service: CadService) -> None:
 
     @mcp.tool()
     def transform_entities(request: TransformRequest, dry_run: bool = True, confirm: bool = False) -> dict:
-        """批量移动、复制、旋转、缩放或镜像实体；dry_run=true 仅预览，dry_run=false 且 confirm=true 才执行。角度使用弧度。"""
+        """Move, copy, rotate, scale or mirror entities in bulk (angles in radians). dry_run=true previews; dry_run=false with confirm=true executes."""
         return invoke(service.transform_entities, request, dry_run, confirm)
 
     @mcp.tool()
@@ -69,7 +69,7 @@ def register_entity_tools(mcp: Any, service: CadService) -> None:
         confirm: bool = False,
         second_confirm: bool = False,
     ) -> dict:
-        """批量删除对象。必须先 dry_run 预览，再以 dry_run=false、confirm=true 且 second_confirm=true 执行（双重确认）。"""
+        """Delete entities in bulk. Preview with dry_run first, then execute with dry_run=false, confirm=true and second_confirm=true."""
         return invoke(service.delete_entities, handles, dry_run, confirm, second_confirm)
 
     @mcp.tool()

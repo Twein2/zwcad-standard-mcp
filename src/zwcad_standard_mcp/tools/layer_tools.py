@@ -11,10 +11,10 @@ from .common import invoke
 def register_layer_tools(mcp: Any, service: CadService) -> None:
     @mcp.tool()
     def list_layers(detail: bool = True) -> dict:
-        """列出图层；用于排查外部图纸图层混乱、颜色线型不统一等问题。"""
+        """List layers (find messy layers, inconsistent colors or linetypes in external drawings)."""
         return invoke(service.list_layers, detail)
 
     @mcp.tool()
     def ensure_layers(layers: list[LayerSpec], dry_run: bool = True, confirm: bool = False) -> dict:
-        """批量创建或更新图层。dry_run=true 仅预览，dry_run=false 且 confirm=true 才执行。"""
+        """Create or update layers in bulk. dry_run=true previews; dry_run=false with confirm=true executes."""
         return invoke(service.ensure_layers, layers, dry_run, confirm)
