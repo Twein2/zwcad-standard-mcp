@@ -28,7 +28,7 @@ from zwcad_standard_mcp.models import (
 
 from .base import CadAdapter
 from .dialogs import DialogWatchdog, click_dialog_button, find_process_dialogs
-from .selection import _wild, build_filter, dxf_name
+from .selection import COMMON_DXF_TYPES, _wild, build_filter
 
 
 _OBJECT_ALIASES = {
@@ -510,11 +510,16 @@ class ComCadAdapter(CadAdapter):
                         by_layer[name] = count
                 result["by_layer"] = dict(sorted(by_layer.items(), key=lambda kv: -kv[1]))
             if "type" in groups and result["count"]:
-                self._select(selection, flt)
-                counter: Counter[str] = Counter()
-                for entity in self._iter_collection(selection):
-                    counter[dxf_name(str(self._safe_get(entity, "ObjectName", "")))] += 1
-                result["by_type"] = dict(counter.most_common())
+                # One CAD-side selection per type; never iterate entities over COM (FINDINGS #29).
+                by_type: dict[str, int] = {}
+                for dxf_type in flt.entity_types or COMMON_DXF_TYPES:
+                    count = self._select(selection, flt.model_copy(update={"entity_types": [dxf_type]}))
+                    if count:
+                        by_type[dxf_type] = count
+                other = result["count"] - sum(by_type.values())
+                if other > 0:
+                    by_type["OTHER"] = other
+                result["by_type"] = dict(sorted(by_type.items(), key=lambda kv: -kv[1]))
         result["elapsed_s"] = round(time.monotonic() - started, 3)
         return result
 

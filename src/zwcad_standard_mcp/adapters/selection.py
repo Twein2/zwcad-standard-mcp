@@ -38,6 +38,16 @@ _OBJECT_NAME_TO_DXF = {
 }
 
 
+# DXF entity names probed one CAD-side selection each by count_entities(group_by=["type"]).
+# Anything not listed is reported as OTHER (count minus the sum of the probed types).
+COMMON_DXF_TYPES = (
+    "POINT", "LINE", "LWPOLYLINE", "POLYLINE", "ARC", "CIRCLE", "ELLIPSE", "SPLINE",
+    "TEXT", "MTEXT", "INSERT", "ATTDEF", "DIMENSION", "LEADER", "MLEADER", "HATCH",
+    "SOLID", "WIPEOUT", "IMAGE", "OLE2FRAME", "XLINE", "RAY", "3DFACE", "REGION",
+    "TABLE", "VIEWPORT", "TOLERANCE", "MLINE", "3DSOLID", "PDFUNDERLAY",
+)
+
+
 def build_filter(spec: EntityFilter) -> tuple[list[int], list[Any]]:
     """Return (group codes, values) for SelectionSet.Select(acSelectionSetAll, ...).
 
