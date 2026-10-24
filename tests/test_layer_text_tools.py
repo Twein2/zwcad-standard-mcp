@@ -118,3 +118,36 @@ def test_strip_formatting_keeps_leading_height() -> None:
     service.update_text_entities(TextUpdateRequest(operation="strip_formatting"), dry_run=False, confirm=True)
     assert adapter.entities["30"]["height"] == 2.5
     assert "height" not in adapter.entities["31"]
+
+
+def test_purge_unused_keeps_standard_layers() -> None:
+    service, adapter = _service()
+    standard = _standard()
+    standard.layers.append(LayerSpec(name="A_EMPTY_STD"))
+    adapter.layers["A_EMPTY_STD"] = {"name": "A_EMPTY_STD", "color": 7, "linetype": "Continuous", "on": True, "locked": False, "frozen": False}
+    service.map_layers(LayerMapRequest(standard=standard, purge_unused=True), dry_run=False, confirm=True)
+    service.map_layers(LayerMapRequest(standard=standard, purge_unused=True), dry_run=False, confirm=True)
+    assert "A_EMPTY_STD" in adapter.layers and "A_GEO_EGIB" in adapter.layers
+    assert "EMPTY" not in adapter.layers
+
+
+def test_confirm_mode_off_skips_confirmation(monkeypatch=None) -> None:
+    import os
+    from zwcad_standard_mcp.permissions.policy import PermissionLevel
+    from zwcad_standard_mcp.permissions_bridge import require_permission
+
+    old = os.environ.get("ZWCAD_MCP_CONFIRM_MODE")
+    try:
+        os.environ["ZWCAD_MCP_CONFIRM_MODE"] = "strict"
+        assert require_permission(PermissionLevel.DELETE, confirm=True) is not None
+        os.environ["ZWCAD_MCP_CONFIRM_MODE"] = "off"
+        assert require_permission(PermissionLevel.DELETE) is None
+        assert require_permission(PermissionLevel.SAVE) is None
+        service, adapter = _service()
+        result = service.update_text_entities(TextUpdateRequest(operation="set", value="X"), dry_run=False)
+        assert result["changed"] == 2
+    finally:
+        if old is None:
+            os.environ.pop("ZWCAD_MCP_CONFIRM_MODE", None)
+        else:
+            os.environ["ZWCAD_MCP_CONFIRM_MODE"] = old

@@ -34,7 +34,7 @@ from zwcad_standard_mcp.models import (
 from zwcad_standard_mcp.adapters.selection import _wild
 from zwcad_standard_mcp import textops
 from zwcad_standard_mcp.permissions.policy import PermissionLevel
-from zwcad_standard_mcp.permissions_bridge import require_permission
+from zwcad_standard_mcp.permissions_bridge import confirm_mode, require_permission
 
 
 # In-memory batch job registry. Jobs are transient; they live only as long as the
@@ -180,9 +180,11 @@ class CadService:
         result = self.adapter.diagnose()
         result["server_policy"] = {
             "permission_model": "per-call confirm (v2)",
-            "write_requires_confirm": True,
-            "delete_requires_second_confirm": True,
-            "save_requires_path_and_confirm": True,
+            "confirm_mode": confirm_mode(),
+            "write_requires_confirm": confirm_mode() == "strict",
+            "delete_requires_second_confirm": confirm_mode() == "strict",
+            "save_requires_path_and_confirm": confirm_mode() == "strict",
+            "how_to_change": "Set ZWCAD_MCP_CONFIRM_MODE=off (or strict) in the MCP server env and restart the client.",
             "adapter": self.settings.adapter,
             "max_batch_size": self.settings.max_batch_size,
             "max_query_results": self.settings.max_query_results,
@@ -340,8 +342,6 @@ class CadService:
         if rejection:
             return rejection
         self._ensure_write()
-        if not confirm:
-            raise ValidationError("Saving requires confirm=true after the user has reviewed the target path.")
         if file_path:
             target = Path(file_path).expanduser()
             if target.exists() and not target.is_file():
@@ -606,6 +606,12 @@ class CadService:
 
         incomplete: list[str] = []
         for step in (s for s in plan["steps"] if s["action"] == "merge"):
+            if not step["entities"]:
+                # Empty source: nothing to move, delete it directly (no selection round-trip).
+                if request.purge_sources:
+                    deleted = self.adapter.delete_layer(step["source"])
+                    (results["deleted"] if deleted.get("success") else results["delete_failed"]).append(deleted)
+                continue
             left = budget - (time.monotonic() - started)
             if left <= 1:
                 incomplete.append(step["source"])
@@ -620,7 +626,11 @@ class CadService:
                 (results["deleted"] if deleted.get("success") else results["delete_failed"]).append(deleted)
 
         if request.purge_unused and not incomplete:
+            # Never purge layers that the standard defines or targets, even when they are empty.
+            keep = {spec.name.lower() for spec in standard.layers} | {rule.target.lower() for rule in standard.rules}
             for name in plan["empty_layers"]:
+                if name.lower() in keep:
+                    continue
                 if name == "0" or name.lower() in self._PROTECTED_LAYERS or "|" in name:
                     continue
                 if any(name.lower() == step["source"].lower() for step in plan["steps"]):
@@ -839,8 +849,6 @@ class CadService:
         if rejection:
             return rejection
         self._ensure_write()
-        if not confirm:
-            raise ValidationError("Deleting entities requires confirm=true after previewing the handles.")
         results = self.adapter.delete_entities(handles)
         return {"success": True, "dry_run": False, **self._summary(results)}
 
