@@ -628,19 +628,22 @@ class ComCadAdapter(CadAdapter):
                 )
         return {"count": count, "items": items, "truncated": count > len(items)}
 
-    def write_texts(self, changes: list[tuple[str, str]], time_budget_s: float) -> dict:
+    def write_texts(self, changes: list[tuple[str, str, float | None]], time_budget_s: float) -> dict:
         doc = self._doc()
         started = time.monotonic()
         changed = 0
         failures: list[dict] = []
         done = 0
         with self._undo_group():
-            for handle, text in changes:
+            for handle, text, height in changes:
                 if time.monotonic() - started > time_budget_s:
                     break
                 done += 1
                 try:
-                    doc.HandleToObject(handle).TextString = text
+                    entity = doc.HandleToObject(handle)
+                    entity.TextString = text
+                    if height is not None:
+                        entity.Height = height
                     changed += 1
                 except Exception as exc:
                     if len(failures) < 10:

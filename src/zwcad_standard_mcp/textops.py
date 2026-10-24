@@ -32,6 +32,18 @@ def strip_mtext_formatting(text: str) -> str:
     return out
 
 
+_LEADING_HEIGHT = re.compile(r"^\{?(?:\\[fF][^;]*;)?\\H([0-9]*\.?[0-9]+);")
+
+
+def mtext_leading_height(text: str) -> float | None:
+    """Absolute height set by a leading \\H code (e.g. "\\fArial;\\H2.5;text" → 2.5).
+
+    Relative heights (\\H0.8x;) and heights set later in the text return None.
+    """
+    match = _LEADING_HEIGHT.match(text)
+    return float(match.group(1)) if match else None
+
+
 def repair_mojibake(text: str, wrong_codepage: str = "cp1250") -> str:
     """Undo UTF-8 bytes that were decoded with an ANSI codepage (e.g. "Ĺ‚" → "ł").
 

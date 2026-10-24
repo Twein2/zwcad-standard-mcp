@@ -57,7 +57,7 @@ def test_replace_text_literal_and_regex() -> None:
 
 def test_map_layers_plan_rename_largest_then_merge() -> None:
     service, adapter = _service()
-    plan = service.map_layers(LayerMapRequest(standard=_standard()), dry_run=True)
+    plan = service.map_layers(LayerMapRequest(standard=_standard(), verbose=True), dry_run=True)
     steps = {s["source"]: s for s in plan["steps"]}
     assert steps["EGB_A"]["action"] == "rename" and steps["EGB_A"]["entities"] == 2
     assert steps["EGB_B"]["action"] == "merge"
@@ -67,7 +67,7 @@ def test_map_layers_plan_rename_largest_then_merge() -> None:
 
 def test_map_layers_execute_and_purge() -> None:
     service, adapter = _service()
-    result = service.map_layers(LayerMapRequest(standard=_standard(), purge_unused=True), dry_run=False, confirm=True)
+    result = service.map_layers(LayerMapRequest(standard=_standard(), purge_unused=True, verbose=True), dry_run=False, confirm=True)
     assert result["complete"] is True
     assert "EGB_A" not in adapter.layers and "EGB_B" not in adapter.layers
     assert adapter.layers["A_GEO_EGIB"]["color"] == 8
@@ -104,3 +104,17 @@ def test_update_text_entities_rejects_other_types() -> None:
         assert "TEXT and MTEXT" in str(exc)
     else:
         raise AssertionError("expected a validation error")
+
+
+def test_map_layers_summary_is_compact() -> None:
+    service, _ = _service()
+    plan = service.map_layers(LayerMapRequest(standard=_standard()), dry_run=True)
+    assert "steps" not in plan and "empty_layers" not in plan
+    assert plan["targets"]["A_GEO_EGIB"] == {"rename_from": "EGB_A", "merge": {"EGB_B": 1}, "empty_sources": 0}
+
+
+def test_strip_formatting_keeps_leading_height() -> None:
+    service, adapter = _service()
+    service.update_text_entities(TextUpdateRequest(operation="strip_formatting"), dry_run=False, confirm=True)
+    assert adapter.entities["30"]["height"] == 2.5
+    assert "height" not in adapter.entities["31"]

@@ -164,6 +164,7 @@ class LayerMapRequest(BaseModel):
     purge_sources: bool = Field(default=True, description="Delete source layers once they are empty")
     purge_unused: bool = Field(default=False, description="Also try to delete every other empty layer")
     time_budget_s: float = Field(default=45.0, gt=1, le=55, description="Stop moving entities after this time")
+    verbose: bool = Field(default=False, description="Return every step and layer name instead of a summary")
 
 
 class TextUpdateRequest(BaseModel):

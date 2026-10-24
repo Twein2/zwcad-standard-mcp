@@ -592,9 +592,11 @@ class FakeCadAdapter(CadAdapter):
         ]
         return {"count": len(found), "items": items, "truncated": len(found) > len(items)}
 
-    def write_texts(self, changes: list[tuple[str, str]], time_budget_s: float) -> dict:
-        for handle, text in changes:
+    def write_texts(self, changes: list[tuple[str, str, float | None]], time_budget_s: float) -> dict:
+        for handle, text, height in changes:
             self._entity(handle)["text"] = text
+            if height is not None:
+                self._entity(handle)["height"] = height
         return {"changed": len(changes), "failed": 0, "failures_sample": [], "remaining": 0, "elapsed_s": 0.0}
 
     def update_entities_by_filter(self, flt: EntityFilter, properties: dict[str, Any]) -> dict:

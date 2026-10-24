@@ -182,8 +182,11 @@ class CadAdapter(ABC):
         """Return ``{"count", "items": [{"handle", "type", "text"}], "truncated"}`` for TEXT/MTEXT."""
         raise NotImplementedError
 
-    def write_texts(self, changes: list[tuple[str, str]], time_budget_s: float) -> dict:
-        """Set TextString by handle. Returns ``{"changed", "failed", "failures_sample", "remaining"}``."""
+    def write_texts(self, changes: list[tuple[str, str, float | None]], time_budget_s: float) -> dict:
+        """Set TextString (and Height when not None) by handle.
+
+        Returns ``{"changed", "failed", "failures_sample", "remaining"}``.
+        """
         raise NotImplementedError
 
     # --- Modal dialog handling ------------------------------------------------------

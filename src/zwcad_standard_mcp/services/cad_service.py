@@ -561,13 +561,29 @@ class CadService:
         standard = self._load_layer_standard(request)
         plan = self._plan_layer_map(standard)
         if dry_run:
-            return {
+            summary = {
                 "success": True,
                 "dry_run": True,
                 "renames": sum(1 for s in plan["steps"] if s["action"] == "rename"),
                 "merges": sum(1 for s in plan["steps"] if s["action"] == "merge"),
-                **plan,
+                "create_layers": plan["create_layers"],
+                "merge_entities": plan["merge_entities"],
+                "estimated_merge_s": plan["estimated_merge_s"],
+                "unmatched_layers_with_entities": plan["unmatched_layers_with_entities"],
+                "empty_layers_count": len(plan["empty_layers"]),
             }
+            if request.verbose:
+                return {**summary, "steps": plan["steps"], "empty_layers": plan["empty_layers"]}
+            targets: dict[str, dict] = {}
+            for step in plan["steps"]:
+                entry = targets.setdefault(step["target"], {"rename_from": None, "merge": {}, "empty_sources": 0})
+                if step["action"] == "rename":
+                    entry["rename_from"] = step["source"]
+                elif step["entities"]:
+                    entry["merge"][step["source"]] = step["entities"]
+                else:
+                    entry["empty_sources"] += 1
+            return {**summary, "targets": targets}
         rejection = require_permission(PermissionLevel.MODIFY, confirm=confirm)
         if rejection:
             return rejection
@@ -612,18 +628,27 @@ class CadService:
                 deleted = self.adapter.delete_layer(name)
                 (results["deleted"] if deleted.get("success") else results["delete_failed"]).append(deleted)
 
-        results["delete_failed"] = results["delete_failed"][:50]
-        return {
+        merged = results["merged"]
+        out = {
             "success": not results["errors"] and not incomplete,
             "dry_run": False,
             "complete": not incomplete,
             "incomplete_sources": incomplete,
             "hint": "Run map_layers again to continue." if incomplete else None,
+            "renamed": [f"{item['source']} -> {item['target']}" for item in results["renamed"]],
+            "layers_ensured": results.get("layers_ensured", 0),
+            "merged_sources": len(merged),
+            "moved_entities": sum(item.get("moved", 0) for item in merged),
+            "move_failures": [item for item in merged if item.get("failed")][:10],
             "deleted_count": len(results["deleted"]),
-            **{k: v for k, v in results.items() if k != "deleted"},
-            "deleted": [item["name"] for item in results["deleted"]],
+            "delete_failed": results["delete_failed"][:20],
+            "errors": results["errors"][:20],
             "elapsed_s": round(time.monotonic() - started, 3),
         }
+        if request.verbose:
+            out["merged"] = merged
+            out["deleted"] = [item["name"] for item in results["deleted"]]
+        return out
 
     # --- text editing -------------------------------------------------------------
 
@@ -665,7 +690,18 @@ class CadService:
             changes = [(item["handle"], new, item) for item in found["items"] if (new := self._new_text(request, item)) != item["text"]]
         except Exception as exc:  # bad regex
             raise ValidationError(f"Text operation failed: {exc}") from exc
-        sample = [{"handle": h, "type": item["type"], "before": item["text"], "after": new} for h, new, item in changes[:20]]
+
+        def _height(item: dict) -> float | None:
+            # Stripping a leading \H code must keep the visible size (FINDINGS #34).
+            if request.operation == "strip_formatting" and item["type"] == "MTEXT":
+                return textops.mtext_leading_height(item["text"])
+            return None
+
+        writes = [(h, new, _height(item)) for h, new, item in changes]
+        sample = [
+            {"handle": h, "type": item["type"], "before": item["text"], "after": new, **({"height": hh} if hh is not None else {})}
+            for (h, new, item), (_, _, hh) in zip(changes[:10], writes[:10])
+        ]
         if dry_run:
             return {
                 "success": True,
@@ -679,14 +715,14 @@ class CadService:
         if rejection:
             return rejection
         self._ensure_write()
-        result = self.adapter.write_texts([(h, new) for h, new, _ in changes], request.time_budget_s)
+        result = self.adapter.write_texts(writes, request.time_budget_s)
         return {
             "success": result["failed"] == 0 and result["remaining"] == 0,
             "dry_run": False,
             "matched": found["count"],
             "to_change": len(changes),
             **result,
-            "sample": sample[:5],
+            "sample": sample[:3],
             "hint": "Run again to continue." if result["remaining"] else None,
         }
 
