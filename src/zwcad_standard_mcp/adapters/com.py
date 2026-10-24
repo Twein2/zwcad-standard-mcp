@@ -978,6 +978,12 @@ class ComCadAdapter(CadAdapter):
             "note": "Device list falls back to known PC5 files if COM does not expose GetPlotDevices.",
         }
 
+    def activate_layout(self, name: str) -> dict:
+        doc = self._doc()
+        layout = self._resolve_layout(doc, name)
+        doc.ActiveLayout = layout
+        return {"active_layout": str(self._safe_get(doc.ActiveLayout, "Name", name))}
+
     def _resolve_layout(self, doc: Any, layout_name: str | None) -> Any:
         if layout_name:
             try:
