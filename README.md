@@ -106,7 +106,8 @@ uses LISP automatically for `group_by` layer/type
   forward or in reverse, with automatic rounding of sharp corners and a feasibility check (CAYENNE.LSP)
 - `round_path_corners`: round a straight-segment route with the vehicle's minimum radius (SCIEZKA)
 
-**Vehicle route planning** (needs numpy, installed by `install.bat`):
+**Vehicle route planning** (needs numpy, installed by `install.bat`). *Status: being reworked to the QuickTurn
+model (FINDINGS #57); routes that would need instantaneous steering changes are refused with an explanation.*
 - `plan_vehicle_route`: find a collision-free route for a car inside a closed boundary from a start vector to
   an end vector (hybrid A* with an exact Dubins tail, whole body with mirrors kept `margin_mm` from the
   boundary, gear changes allowed or `allow_reverse=false`). Read-only; runs in the background and returns a

@@ -91,7 +91,9 @@ def register_lisp_tools(mcp: Any, service: CadService) -> None:
         boundary use plan_vehicle_route + draw_vehicle_route (they call this tool for verification).
         Forward: the path is the front axle centre; reverse: the rear axle centre. Sharp polyline corners are
         rounded with the minimum radius first (auto_fillet; use false for planned, already smooth paths).
-        Reports whether the path is feasible and marks places that need more steering on SP_PRZEKROCZENIE.
+        Reports whether the path is feasible and marks places that need more steering on SP_PRZEKROCZENIE;
+        steering_continuous=false / max_steer_change_per_step_deg show kinks (forward) or curvature jumps (reverse)
+        where the wheels would have to turn instantly.
         Existing SP_* layers that are off are switched on (show_layers). dry_run=true returns the vehicle limits.
         """
         return invoke(service.vehicle_swept_path, request, dry_run, confirm)
