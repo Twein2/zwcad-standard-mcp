@@ -19,3 +19,9 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+---------------------------------------------------------------------------------------------------
+Portions (src/zwcad_standard_mcp/adapters/screenshot.py, the file-IPC approach of the LISP channel) are
+adapted from dalingo81/ZWCAD-MCP, distributed under the MIT License:
+
+Copyright (c) 2024 AutoCAD MCP Server Contributors

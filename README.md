@@ -27,6 +27,16 @@ MCP Python SDK.
 >   or empty PDF is reported as a failure.
 > - **Higher default limits.** Batch and query limits are now 10,000.
 > - **Fix.** `activate_layout` is implemented in the COM adapter, so the server starts.
+> - **AutoLISP channel inside the same server.** Bulk work runs as LISP inside ZWCAD (`ssget`, `entget`,
+>   `vlax-curve-*`): grouped counts of 11,833 entities take about 1 s instead of 16–26 s over COM. The LISP
+>   library ships with the package and is loaded into each drawing on demand (no `load`, no trusted paths).
+>   Polish text is handled in both directions. `execute_lisp` (arbitrary code) is opt-in.
+> - **Screenshots and views.** `get_screenshot` (drawing area or whole window, works when ZWCAD is behind other
+>   windows) and `zoom_view`.
+> - **Office LISP routines as tools.** Area fields in room labels, the equinox sun ruler, vehicle swept paths
+>   and route rounding, ported from the fork owner's LISP routines.
+> - **Settings file.** Confirm mode and `execute_lisp` live in `%USERPROFILE%\zwcad-mcp\settings.json`, so they
+>   survive Claude Desktop rewriting its own config.
 > - **English-only documentation and tool descriptions.**
 
 ## Problems it solves
@@ -43,7 +53,7 @@ MCP Python SDK.
 | Fear of accidental changes or deletions | dry-run by default, per-call `confirm`, second confirmation for delete/save, undo marks |
 | ZWCAD dialogs block automation | `list_cad_dialogs`, `dismiss_cad_dialog`, dialog guard |
 
-## Tools (50)
+## Tools (59)
 
 **System**: `diagnose_cad`, `get_cad_app_info`, `audit_drawing`, `list_cad_dialogs`, `dismiss_cad_dialog`,
 `get_cad_job` (result of a call that was moved to the background because a dialog appeared)
@@ -76,6 +86,25 @@ references, and aligned, rotated, radial and diametric dimensions.
 `update_block_attributes`, `insert_blocks_batch`
 
 **Files**: `scan_cad_folder`, `open_document`, `close_document`, `create_batch_job`, `get_batch_job_status`
+
+**View**: `get_screenshot` (PNG image block, cropped to the drawing area by default), `zoom_view` (extents,
+window or the bounding box of handles)
+
+**LISP channel**: `lisp_status`, `execute_lisp` (opt-in, see [Settings file](#settings-file)); `count_entities`
+uses LISP automatically for `group_by` layer/type
+
+**Geometry**: `offset_entities`
+
+**Architectural routines** (ported from AutoLISP commands used in practice; the LISP code is in
+`src/zwcad_standard_mcp/lisp/mo_tools.lsp`):
+- `insert_area_fields`: live area field (m²) of a polyline or hatch in a room label, keeping the label text;
+  optional `<layer> - <area>` (WklejPole / WklejPoleHatch)
+- `draw_sun_ruler`: equinox sun ruler at a window for the 21 March / 23 September exposure check: lines towards
+  the sun every 30 min 7:00–17:00, height lines, exposure sector, block, result text and room label
+  (LinijkaSlonca)
+- `vehicle_swept_path`: swept path of a car (body with mirrors and outer tyre faces) along a path driven
+  forward or in reverse, with automatic rounding of sharp corners and a feasibility check (CAYENNE.LSP)
+- `round_path_corners`: round a straight-segment route with the vehicle's minimum radius (SCIEZKA)
 
 ### Filtered selection
 
@@ -227,6 +256,30 @@ path), or run `.venv\Scripts\python.exe -m zwcad_standard_mcp.configure --config
 }
 ```
 
+## Settings file
+
+Claude Desktop keeps `claude_desktop_config.json` in memory and rewrites it while it runs, so values edited
+there can be lost. The server therefore reads its own settings file at start-up:
+
+1. the file named in `ZWCAD_MCP_SETTINGS`, else
+2. `%USERPROFILE%\zwcad-mcp\settings.json` (written by `configure`), else
+3. `zwcad-mcp.settings.json` in the repository folder (git-ignored).
+
+```json
+{ "confirm_mode": "strict", "execute_lisp": false }
+```
+
+Change it with `.venv\Scripts\python.exe -m zwcad_standard_mcp.configure --confirm-mode off|strict` and
+`--enable-lisp` / `--disable-lisp` (or `install.bat [strict|off] [lisp|nolisp]`), then restart Claude Desktop.
+Environment variables in the client config still take precedence. `diagnose_cad` shows which file was used.
+
+### LISP channel
+
+Requests are written to `%USERPROFILE%\zwcad-mcp\ipc` (not `%LOCALAPPDATA%`: the Microsoft Store build of
+Claude Desktop virtualises AppData, so ZWCAD would not see the files) and sent with `Document.SendCommand`.
+Each call appears once on the ZWCAD command line. ZWCAD must be idle (no running command); the server refuses
+with `CAD_BUSY` otherwise. Long routines continue in the background and return a `job_id` for `get_cad_job`.
+
 ## Configuration
 
 | Environment variable | Default | Meaning |
@@ -240,6 +293,11 @@ path), or run `.venv\Scripts\python.exe -m zwcad_standard_mcp.configure --config
 | `ZWCAD_MCP_TRANSPORT` | `stdio` | `stdio` or `streamable-http` |
 | `ZWCAD_MCP_ADAPTER` | `com` | `com`; `fake` for tests |
 | `ZWCAD_MCP_LOG_LEVEL` | `INFO` | Log level |
+| `ZWCAD_MCP_ENABLE_LISP` | `0` | `1` allows `execute_lisp` |
+| `ZWCAD_MCP_LISP_COUNTS` | `1` | Use LISP for grouped counts |
+| `ZWCAD_MCP_IPC_DIR` | `%USERPROFILE%\zwcad-mcp\ipc` | LISP request/result folder |
+| `ZWCAD_MCP_CODEPAGE` | system ANSI codepage | Encoding of LISP request/result files (e.g. `cp1250`) |
+| `ZWCAD_MCP_SETTINGS` | — | Path of the settings file |
 
 ## Recommended validation order
 
@@ -319,6 +377,7 @@ To inspect the tool schemas locally, set `ZWCAD_MCP_ADAPTER=fake` and run `pytho
 - `open_document` runs in a worker thread: when an unknown dialog appears it returns `MODAL_DIALOG_OPEN` with a
   `job_id`; answer the dialog with `dismiss_cad_dialog`, then call `get_cad_job`. Plotting is not detached yet.
 - Undo marks make changes easy to undo, but they are not database transactions.
+- LISP calls use the command line of the active drawing; they cannot run while the user is in a command.
 
 ## Project structure
 
@@ -331,7 +390,8 @@ zwcad-standard-mcp/
 ├── docs/            design notes and acceptance tests
 ├── examples/        agent usage examples
 ├── src/zwcad_standard_mcp/
-│   ├── adapters/    com.py, fake.py, selection.py, dialogs.py
+│   ├── adapters/    com.py, fake.py, selection.py, dialogs.py, lisp_channel.py, screenshot.py
+│   ├── lisp/        zwmcp_core.lsp (channel), mo_tools.lsp (architectural routines)
 │   ├── services/
 │   ├── tools/
 │   ├── config.py
@@ -344,8 +404,11 @@ zwcad-standard-mcp/
 
 - Original project: [qwtao321/zwcad-standard-mcp](https://github.com/qwtao321/zwcad-standard-mcp), MIT licence.
   The copyright notice in `LICENSE` is kept.
-- Planned additions from [dalingo81/ZWCAD-MCP](https://github.com/dalingo81/ZWCAD-MCP) (MIT) will keep its
-  notice as well.
+- The screenshot code and the file-IPC idea come from [dalingo81/ZWCAD-MCP](https://github.com/dalingo81/ZWCAD-MCP)
+  (MIT); its copyright notice is included in `LICENSE`.
+- `mo_tools.lsp` ports AutoLISP routines written by the fork owner (area fields, sun ruler, CAYENNE swept path;
+  the swept-path maths follows QuickTurn2, Mathematical and Computer Modelling 49/2009).
+- `docs/API_INVENTORY.md` lists the ZWCAD COM and LISP capabilities, based on the ZWCAD developer documentation.
 
 ## References
 
