@@ -318,6 +318,63 @@ class HeadingLattice:
         return True
 
 
+def _dubins_pieces(q0, q1, gear: int, kmax: float, free_many, res: float, max_len: float):
+    """Collision-free Dubins connection q0 -> q1 driven in ``gear`` (pieces in real-car terms) or None."""
+    flip = 0.0 if gear > 0 else math.pi
+    a = (q0[0], q0[1], q0[2] + flip)
+    b = (q1[0], q1[1], q1[2] + flip)
+    for total, segs in dubins_words(a, b, 1.0 / kmax):
+        if total > max_len + 1e-6:
+            return None
+        pieces, cx, cy, cth, good = [], a[0], a[1], a[2], True
+        for sgn, ln in segs:
+            if ln < 1e-6:
+                continue
+            n = max(1, int(math.ceil(ln / (2 * res))))
+            pts = np.array([arc_end(cx, cy, cth, sgn * kmax, ln * i / n) for i in range(1, n + 1)])
+            if not free_many(pts[:, 0], pts[:, 1], pts[:, 2] - flip).all():
+                good = False
+                break
+            ex, ey, eth = pts[-1]
+            pieces.append({"from": (cx, cy, cth - flip), "to": (float(ex), float(ey), float(eth) - flip),
+                           "dir": gear, "kappa": sgn * kmax * gear, "len": ln})
+            cx, cy, cth = float(ex), float(ey), float(eth)
+        if good:
+            return pieces
+    return None
+
+
+def _smooth(prims: list[dict], free_many, kmax: float, res: float) -> list[dict]:
+    """Shortcut each same-gear run with collision-free Dubins connections (removes left/right zigzags)."""
+    out: list[dict] = []
+    i = 0
+    while i < len(prims):
+        j = i
+        while j + 1 < len(prims) and prims[j + 1]["dir"] == prims[i]["dir"]:
+            j += 1
+        run = prims[i:j + 1]
+        poses = [run[0]["from"]] + [p["to"] for p in run]
+        cum = [0.0]
+        for p in run:
+            cum.append(cum[-1] + p["len"])
+        a = 0
+        while a < len(run):
+            done = False
+            for b in range(len(poses) - 1, a + 1, -1):     # farthest pose first
+                pieces = _dubins_pieces(poses[a], poses[b], run[0]["dir"], kmax, free_many, res,
+                                        max_len=cum[b] - cum[a])
+                if pieces:
+                    out.extend(pieces)
+                    a = b
+                    done = True
+                    break
+            if not done:
+                out.append(run[a])
+                a += 1
+        i = j + 1
+    return out
+
+
 def _plan_once(boundary, start_vec, end_vec, vehicle: dict, units: str = "cm", *, margin_mm: float = 100.0,
                allow_reverse: bool = True, max_gear_changes: int = 3, step_mm: float = 250.0,
                steer_fraction: float = 0.95, time_budget_s: float = 50.0, anchor: str = "centre",
@@ -565,6 +622,7 @@ def _plan_once(boundary, start_vec, end_vec, vehicle: dict, units: str = "cm", *
         prev = n
     prims += tail
 
+    prims = _smooth(prims, free_many, kmax, res)
     merged: list[dict] = []
     for p in prims:
         if merged and merged[-1]["dir"] == p["dir"] and abs(merged[-1]["kappa"] - p["kappa"]) < 1e-12:
