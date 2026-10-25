@@ -105,8 +105,10 @@ def register_lisp_tools(mcp: Any, service: CadService) -> None:
         USE THIS for requests like "draw the vehicle route from start to end avoiding the boundary". Read-only:
         reads the boundary (closed LWPOLYLINE) and two vectors (2-point LWPOLYLINE or LINE, tail -> head = the
         direction the car faces; by default the vector midpoint is the body centre), then plans in the server
-        (hybrid A* + exact Dubins tail, whole body with mirrors kept margin_mm from the boundary, Porsche Cayenne
-        defaults, overridable). allow_reverse=false checks forward-only driving and answers within seconds when
+        in the QuickTurn model (as QuickTurn2's dynamic path: the guided axle follows tangent-continuous arcs with
+        R >= wheelbase / sin(lock), the car follows by the tractrix; whole body with mirrors kept margin_mm from the
+        boundary; Porsche Cayenne defaults, overridable). If the margin cannot be kept, the drivable route is
+        returned with `violations` (boundary edges that must be violated, with depth). allow_reverse=false checks forward-only driving and answers within seconds when
         it is impossible. Planning runs in the background: if status is 'running', poll get_vehicle_route_plan.
         Then draw_vehicle_route(plan_id) draws one polyline per gear and verifies it with the swept path.
         Do not write your own planner or call vehicle_swept_path on the vectors.
@@ -121,8 +123,8 @@ def register_lisp_tools(mcp: Any, service: CadService) -> None:
     @mcp.tool()
     def draw_vehicle_route(request: DrawVehicleRouteRequest, dry_run: bool = True, confirm: bool = False) -> dict:
         """Draw a planned route (one LWPOLYLINE with arcs per gear: forward = front axle path, green; reverse = rear
-        axle path, red) and, with verify=true, run vehicle_swept_path on every segment and check that the
-        envelopes do not intersect the boundary. Returns handles, steering, intersections and clearance."""
+        axle path, red), mark the boundary parts the route has to violate (violation_layer, red with depth labels)
+        and, with verify=true, run vehicle_swept_path on every segment and check the envelopes against the boundary."""
         return invoke(service.draw_vehicle_route, request, dry_run, confirm)
 
     @mcp.tool()

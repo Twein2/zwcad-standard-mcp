@@ -383,6 +383,8 @@ class DrawVehicleRouteRequest(BaseModel):
 
     plan_id: str = Field(min_length=1)
     layer: str = Field(default="VEHICLE_ROUTE", min_length=1)
+    violation_layer: str = Field(default="SP_NARUSZENIE", min_length=1,
+                                 description="Layer for the boundary parts the route has to violate (red, with labels)")
     verify: bool = Field(default=True, description="Run vehicle_swept_path on every segment and check the envelopes against the boundary")
     outline_interval_mm: float = Field(default=2000.0, ge=0, description="Car outline every N mm in the swept path (0 = none)")
 
