@@ -2,7 +2,13 @@ from __future__ import annotations
 
 from typing import Any
 
-from zwcad_standard_mcp.models import AreaTakeoffRequest, DimStyleSpec, HatchRequest, TextStyleSpec
+from zwcad_standard_mcp.models import (
+    AreaTakeoffRequest,
+    BoundaryDistanceRequest,
+    DimStyleSpec,
+    HatchRequest,
+    TextStyleSpec,
+)
 from zwcad_standard_mcp.services import CadService
 
 from .common import invoke
@@ -20,8 +26,9 @@ def register_annotation_tools(mcp: Any, service: CadService) -> None:
         """Create or update dimension styles from DIM* variables.
 
         Typical site plan (PZT) drawn in cm at 1:500 showing metres with 2 decimals: linear_scale=0.01,
-        decimals=2, decimal_separator=',', text_height=125 (2.5 mm on paper), arrow_block='_ARCHTICK'.
-        set_current=true makes it the active style.
+        decimals=2, decimal_separator=',', text_height=125 (2.5 mm on paper), arrow_block='_ARCHTICK',
+        overall_scale=1 (always set it: drawings often carry a large DIMSCALE that multiplies text and arrows).
+        set_current=true makes it the active style. Updating an existing style refreshes its dimensions.
         """
         return invoke(service.ensure_dim_styles, styles, dry_run, confirm)
 
@@ -33,6 +40,17 @@ def register_annotation_tools(mcp: Any, service: CadService) -> None:
         the executed result returns the hatch handle and its area (drawing units).
         """
         return invoke(service.create_hatch, request, dry_run, confirm)
+
+    @mcp.tool()
+    def dimension_to_boundaries(request: BoundaryDistanceRequest, dry_run: bool = True, confirm: bool = False) -> dict:
+        """Distance from a building outline to each plot boundary segment, in metres, sorted closest first.
+
+        Checks a required minimum (min_distance_m, per-boundary overrides in boundary_min_m — e.g. 4 m for a wall
+        with windows, 3 m without, WT §12) and whether the building lies inside the plot. With
+        create_dimensions=true it draws aligned dimensions between the closest points (dry_run=false,
+        confirm=true), using the current dimension style. Measuring alone is read-only.
+        """
+        return invoke(service.dimension_to_boundaries, request, dry_run, confirm)
 
     @mcp.tool()
     def area_takeoff(request: AreaTakeoffRequest) -> dict:

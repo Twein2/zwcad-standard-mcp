@@ -43,9 +43,10 @@ MCP Python SDK.
 | Fear of accidental changes or deletions | dry-run by default, per-call `confirm`, second confirmation for delete/save, undo marks |
 | ZWCAD dialogs block automation | `list_cad_dialogs`, `dismiss_cad_dialog`, dialog guard |
 
-## Tools (48)
+## Tools (50)
 
-**System**: `diagnose_cad`, `get_cad_app_info`, `audit_drawing`, `list_cad_dialogs`, `dismiss_cad_dialog`
+**System**: `diagnose_cad`, `get_cad_app_info`, `audit_drawing`, `list_cad_dialogs`, `dismiss_cad_dialog`,
+`get_cad_job` (result of a call that was moved to the background because a dialog appeared)
 
 **Documents**: `get_current_document`, `list_documents`, `activate_document`, `save_document`
 
@@ -61,7 +62,8 @@ merge, purge; see `examples/layer_standard_geodetic_map.json`)
 
 **Annotation and areas**: `ensure_text_styles` (TrueType, Polish characters), `ensure_dim_styles` (e.g. cm
 drawing dimensioned in metres), `create_hatch` (islands, layer, area), `area_takeoff` (site balance: plot,
-buildings, paving, biologically active area, intensity, checks against MPZP limits)
+buildings, paving, biologically active area, intensity, checks against MPZP limits), `dimension_to_boundaries`
+(distance from a building to each plot boundary, minimum-distance checks, optional dimensions)
 
 **Drawing**: `create_entities_batch`. Supports lines, circles, arcs, lightweight polylines, text, MText, block
 references, and aligned, rotated, radial and diametric dimensions.
@@ -314,7 +316,8 @@ To inspect the tool schemas locally, set `ZWCAD_MCP_ADAPTER=fake` and run `pytho
   must be checked on the target machine.
 - `query_entities` and `audit_drawing` still iterate entities over COM. On large drawings use
   `count_entities` and `select_entities` instead.
-- Dialogs not in the safe list still block a COM call until a user, or `dismiss_cad_dialog`, answers them.
+- `open_document` runs in a worker thread: when an unknown dialog appears it returns `MODAL_DIALOG_OPEN` with a
+  `job_id`; answer the dialog with `dismiss_cad_dialog`, then call `get_cad_job`. Plotting is not detached yet.
 - Undo marks make changes easy to undo, but they are not database transactions.
 
 ## Project structure

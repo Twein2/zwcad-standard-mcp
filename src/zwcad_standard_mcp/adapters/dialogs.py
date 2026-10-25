@@ -72,6 +72,26 @@ def find_process_dialogs(main_hwnd: int | None = None, pid: int | None = None) -
             pass
         return texts
 
+    def _message_text(hwnd: int) -> str:
+        # Visible Static controls hold the dialog's message (e.g. a message box body).
+        parts: list[str] = []
+
+        def _child(child: int, _: Any) -> bool:
+            try:
+                if win32gui.GetClassName(child) == "Static" and win32gui.IsWindowVisible(child):
+                    text = win32gui.GetWindowText(child).strip()
+                    if text and text not in parts:
+                        parts.append(text)
+            except Exception:
+                pass
+            return True
+
+        try:
+            win32gui.EnumChildWindows(hwnd, _child, None)
+        except Exception:
+            pass
+        return "\n".join(parts)[:1000]
+
     def _top(hwnd: int, _: Any) -> bool:
         try:
             if not win32gui.IsWindowVisible(hwnd):
@@ -88,6 +108,7 @@ def find_process_dialogs(main_hwnd: int | None = None, pid: int | None = None) -
                     "title": win32gui.GetWindowText(hwnd),
                     "class": cls,
                     "buttons": _children_text(hwnd),
+                    "message": _message_text(hwnd),
                 }
             )
         except Exception:
@@ -110,6 +131,8 @@ SAFE_DIALOG_ANSWERS: list[tuple[str, tuple[str, ...]]] = [
     ("proxy information", ("OK", "Close")),
     ("missing shx", ("Ignore", "Skip")),
     ("specify font", ("Cancel",)),
+    # Dense hatches on open: keep the drawing as is (does not change HPMAXLINES).
+    ("too many hatch lines", ("Keep degenerated display",)),
 ]
 
 

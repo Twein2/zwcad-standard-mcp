@@ -26,6 +26,7 @@ from zwcad_standard_mcp.models import (
     EntityQuerySpec,
     LayerMapRequest,
     AreaTakeoffRequest,
+    BoundaryDistanceRequest,
     DimStyleSpec,
     HatchRequest,
     TextStyleSpec,
@@ -562,6 +563,7 @@ class CadService:
         }
 
     def map_layers(self, request: LayerMapRequest, dry_run: bool = True, confirm: bool = False) -> dict:
+        started = time.monotonic()  # the budget covers the whole call, including planning (FINDINGS #38)
         standard = self._load_layer_standard(request)
         plan = self._plan_layer_map(standard)
         if dry_run:
@@ -592,35 +594,44 @@ class CadService:
         if rejection:
             return rejection
         self._ensure_write()
-        started = time.monotonic()
         budget = request.time_budget_s
-        results: dict[str, Any] = {"renamed": [], "merged": [], "deleted": [], "delete_failed": [], "errors": []}
+        timings: dict[str, float] = {"plan_s": round(time.monotonic() - started, 2)}
 
+        def left() -> float:
+            return budget - (time.monotonic() - started)
+
+        def lap(name: str, since: float) -> float:
+            now = time.monotonic()
+            timings[name] = round(now - since, 2)
+            return now
+
+        results: dict[str, Any] = {"renamed": [], "merged": [], "deleted": [], "delete_failed": [], "errors": []}
+        incomplete: list[str] = []
+        mark = time.monotonic()
+
+        # 1. Renames are instant and create most targets.
         for step in (s for s in plan["steps"] if s["action"] == "rename"):
             outcome = self.adapter.rename_layer(step["source"], step["target"])
             (results["renamed"] if outcome.get("success") else results["errors"]).append(outcome)
+        mark = lap("rename_s", mark)
 
-        specs = {spec.name.lower(): spec for spec in standard.layers}
-        for name in plan["create_layers"]:
-            specs.setdefault(name.lower(), LayerSpec(name=name))
-        if specs:
-            layer_results = self.adapter.ensure_layers(list(specs.values()))
-            results["errors"].extend(item for item in layer_results if not item.get("success"))
-            results["layers_ensured"] = len(layer_results)
+        # 2. Create only the targets that are still missing (properties come last, step 4).
+        if plan["create_layers"]:
+            created = self.adapter.ensure_layers([LayerSpec(name=name) for name in plan["create_layers"]])
+            results["errors"].extend(item for item in created if not item.get("success"))
+        mark = lap("create_s", mark)
 
-        incomplete: list[str] = []
+        # 3. Merge non-empty sources and delete emptied / empty ones — the part that needs the budget.
         for step in (s for s in plan["steps"] if s["action"] == "merge"):
+            if left() <= 1:
+                incomplete.append(step["source"])
+                continue
             if not step["entities"]:
-                # Empty source: nothing to move, delete it directly (no selection round-trip).
                 if request.purge_sources:
                     deleted = self.adapter.delete_layer(step["source"])
                     (results["deleted"] if deleted.get("success") else results["delete_failed"]).append(deleted)
                 continue
-            left = budget - (time.monotonic() - started)
-            if left <= 1:
-                incomplete.append(step["source"])
-                continue
-            moved = self.adapter.move_layer_entities(step["source"], step["target"], left)
+            moved = self.adapter.move_layer_entities(step["source"], step["target"], left())
             results["merged"].append({"source": step["source"], "target": step["target"], **moved})
             if moved.get("remaining") or moved.get("failed"):
                 incomplete.append(step["source"])
@@ -628,26 +639,39 @@ class CadService:
             if request.purge_sources:
                 deleted = self.adapter.delete_layer(step["source"])
                 (results["deleted"] if deleted.get("success") else results["delete_failed"]).append(deleted)
+        mark = lap("merge_s", mark)
 
-        if request.purge_unused and not incomplete:
-            # Never purge layers that the standard defines or targets, even when they are empty.
-            keep = {spec.name.lower() for spec in standard.layers} | {rule.target.lower() for rule in standard.rules}
-            for name in plan["empty_layers"]:
-                if name.lower() in keep:
-                    continue
-                if name == "0" or name.lower() in self._PROTECTED_LAYERS or "|" in name:
-                    continue
-                if any(name.lower() == step["source"].lower() for step in plan["steps"]):
-                    continue
-                deleted = self.adapter.delete_layer(name)
-                (results["deleted"] if deleted.get("success") else results["delete_failed"]).append(deleted)
+        # 4. Once everything is merged: standard layer properties, then purge of other empty layers.
+        if not incomplete:
+            if standard.layers and left() > 1:
+                layer_results = self.adapter.ensure_layers(list(standard.layers))
+                results["errors"].extend(item for item in layer_results if not item.get("success"))
+                results["layers_ensured"] = len(layer_results)
+            elif standard.layers:
+                incomplete.append("standard layer properties")
+            mark = lap("standard_s", mark)
+            if request.purge_unused and not incomplete:
+                # Never purge layers that the standard defines or targets, even when they are empty.
+                keep = {spec.name.lower() for spec in standard.layers} | {rule.target.lower() for rule in standard.rules}
+                for name in plan["empty_layers"]:
+                    if name.lower() in keep or name == "0" or name.lower() in self._PROTECTED_LAYERS or "|" in name:
+                        continue
+                    if any(name.lower() == step["source"].lower() for step in plan["steps"]):
+                        continue
+                    if left() <= 1:
+                        incomplete.append(f"purge:{name}")
+                        continue
+                    deleted = self.adapter.delete_layer(name)
+                    (results["deleted"] if deleted.get("success") else results["delete_failed"]).append(deleted)
+                lap("purge_s", mark)
 
         merged = results["merged"]
         out = {
             "success": not results["errors"] and not incomplete,
             "dry_run": False,
             "complete": not incomplete,
-            "incomplete_sources": incomplete,
+            "incomplete_count": len(incomplete),
+            "incomplete_sample": incomplete[:10],
             "hint": "Run map_layers again to continue." if incomplete else None,
             "renamed": [f"{item['source']} -> {item['target']}" for item in results["renamed"]],
             "layers_ensured": results.get("layers_ensured", 0),
@@ -657,9 +681,11 @@ class CadService:
             "deleted_count": len(results["deleted"]),
             "delete_failed": results["delete_failed"][:20],
             "errors": results["errors"][:20],
+            "timings": timings,
             "elapsed_s": round(time.monotonic() - started, 3),
         }
         if request.verbose:
+            out["incomplete_sources"] = incomplete
             out["merged"] = merged
             out["deleted"] = [item["name"] for item in results["deleted"]]
         return out
@@ -812,6 +838,86 @@ class CadService:
         result["expected_area"] = expected
         return result
 
+    _UNIT_TO_M = {4: 0.001, 5: 0.01, 6: 1.0}
+
+    def dimension_to_boundaries(self, request: BoundaryDistanceRequest, dry_run: bool = True, confirm: bool = False) -> dict:
+        from zwcad_standard_mcp import geometry
+
+        building = self.adapter.polyline_points(request.building_handle)
+        plot = self.adapter.polyline_points(request.plot_handle)
+        for label, shape in (("building", building), ("plot", plot)):
+            if not shape["closed"] or len(shape["points"]) < 3:
+                raise ValidationError(f"The {label} outline must be a closed polyline with at least 3 vertices.")
+        insunits = self._UNIT_NAMES[request.units] if request.units != "auto" else self.adapter.drawing_units()
+        to_m = self._UNIT_TO_M.get(insunits)
+        if to_m is None:
+            raise ValidationError(f"Drawing units unknown (INSUNITS={insunits}); pass units='mm'|'cm'|'m'.")
+        b_pts = [tuple(p) for p in building["points"]]
+        p_pts = [tuple(p) for p in plot["points"]]
+        outside = [list(p) for p in b_pts if not geometry.point_in_polygon(p, p_pts)]
+
+        rows = []
+        for item in geometry.distances_to_boundaries(b_pts, p_pts):
+            distance_m = round(item["distance"] * to_m, 3)
+            if request.report_within_m is not None and distance_m > request.report_within_m:
+                continue
+            required = request.boundary_min_m.get(item["boundary_index"], request.min_distance_m)
+            row = {
+                "boundary_index": item["boundary_index"],
+                "boundary_length_m": round(item["boundary_length"] * to_m, 2),
+                "distance_m": distance_m,
+                "building_point": item["building_point"],
+                "boundary_point": item["boundary_point"],
+            }
+            if required is not None:
+                row.update({"required_m": required, "ok": distance_m + 1e-6 >= required})
+            rows.append(row)
+        rows.sort(key=lambda r: r["distance_m"])
+        result: dict[str, Any] = {
+            "success": True,
+            "units": {4: "mm", 5: "cm", 6: "m"}[insunits],
+            "building_inside_plot": not outside,
+            "vertices_outside_plot": outside[:10],
+            "boundaries": rows,
+            "closest_m": rows[0]["distance_m"] if rows else None,
+        }
+        checked = [r for r in rows if "ok" in r]
+        if checked:
+            result["all_ok"] = all(r["ok"] for r in checked)
+            result["violations"] = [r["boundary_index"] for r in checked if not r["ok"]]
+        if not request.create_dimensions:
+            return result
+
+        specs = [
+            EntityCreateSpec(
+                entity_type="dimension_aligned",
+                params={
+                    "point1": r["building_point"],
+                    "point2": r["boundary_point"],
+                    "text_point": [
+                        (r["building_point"][0] + r["boundary_point"][0]) / 2,
+                        (r["building_point"][1] + r["boundary_point"][1]) / 2,
+                    ],
+                },
+                layer=request.layer or "0",
+            )
+            for r in rows
+            if r["distance_m"] > 0
+        ]
+        if dry_run:
+            return {**result, "dry_run": True, "dimensions_to_create": len(specs)}
+        if request.layer:
+            existing = {item["name"].lower() for item in self.adapter.list_layers(detail=False)}
+            if request.layer.lower() not in existing:
+                raise ValidationError(f"Layer does not exist: {request.layer} (create it with ensure_layers).")
+        rejection = require_permission(PermissionLevel.MODIFY, confirm=confirm)
+        if rejection:
+            return rejection
+        self._ensure_write()
+        created = self.adapter.create_entities(specs)
+        return {**result, "dry_run": False, "dimensions": [c.get("handle") for c in created if c.get("success")],
+                "dimension_failures": [c for c in created if not c.get("success")]}
+
     def area_takeoff(self, request: AreaTakeoffRequest) -> dict:
         groups: dict[str, list[str]] = {
             "plot": [request.plot_handle],
@@ -876,8 +982,11 @@ class CadService:
         return {
             "success": True,
             "count": len(dialogs),
-            "dialogs": [{"title": d.get("title"), "buttons": d.get("buttons")} for d in dialogs],
+            "dialogs": [{"title": d.get("title"), "message": d.get("message", ""), "buttons": d.get("buttons")} for d in dialogs],
         }
+
+    def get_cad_job(self, job_id: str) -> dict:
+        return self.adapter.job_status(job_id)
 
     def dismiss_cad_dialog(self, title_contains: str, button: str, confirm: bool = False) -> dict:
         rejection = require_permission(PermissionLevel.MODIFY, confirm=confirm)

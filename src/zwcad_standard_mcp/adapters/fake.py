@@ -642,6 +642,12 @@ class FakeCadAdapter(CadAdapter):
                                "layer": entity.get("layer", "0")}
         return out
 
+    def polyline_points(self, handle: str) -> dict:
+        entity = self._entity(handle)
+        if "points" not in entity:
+            raise ValidationError(f"Entity {handle} is not a polyline.")
+        return {"type": "LWPOLYLINE", "closed": entity.get("closed", True), "points": entity["points"]}
+
     def drawing_units(self) -> int:
         return self.insunits
 

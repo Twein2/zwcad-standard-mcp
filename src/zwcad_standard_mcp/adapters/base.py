@@ -211,6 +211,10 @@ class CadAdapter(ABC):
         """``{handle: {"success", "type", "closed", "area", "layer"}}`` in drawing units."""
         raise NotImplementedError
 
+    def polyline_points(self, handle: str) -> dict:
+        """``{"type", "closed", "points": [[x, y], ...]}`` for LWPOLYLINE / 2D POLYLINE."""
+        raise NotImplementedError
+
     def drawing_units(self) -> int:
         """INSUNITS value (4 = mm, 5 = cm, 6 = m, 0 = unitless)."""
         raise NotImplementedError
@@ -220,6 +224,9 @@ class CadAdapter(ABC):
     def list_dialogs(self) -> list[dict]:
         """Visible modal dialogs owned by the CAD process (empty when unsupported)."""
         return []
+
+    def job_status(self, job_id: str) -> dict:
+        return {"success": False, "job_id": job_id, "error": "Background jobs are not supported by this adapter."}
 
     def dismiss_dialog(self, title_contains: str, button: str) -> dict:
         return {"success": False, "error": "Dialog handling is not supported by this adapter."}

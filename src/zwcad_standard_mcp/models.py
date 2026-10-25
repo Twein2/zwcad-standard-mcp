@@ -163,7 +163,7 @@ class LayerMapRequest(BaseModel):
     standard_path: str | None = Field(default=None, description="Path to a JSON file with the same structure")
     purge_sources: bool = Field(default=True, description="Delete source layers once they are empty")
     purge_unused: bool = Field(default=False, description="Also try to delete every other empty layer")
-    time_budget_s: float = Field(default=45.0, gt=1, le=55, description="Stop moving entities after this time")
+    time_budget_s: float = Field(default=40.0, gt=1, le=50, description="Stop after this time (whole call); run again to continue")
     verbose: bool = Field(default=False, description="Return every step and layer name instead of a summary")
 
 
@@ -228,6 +228,21 @@ class AreaLimits(BaseModel):
     max_building_percent: float | None = Field(default=None, description="Maximum building footprint, % of plot")
     min_intensity: float | None = None
     max_intensity: float | None = None
+
+
+class BoundaryDistanceRequest(BaseModel):
+    """Distances from a building outline to every plot boundary segment (WT §12 checks)."""
+
+    building_handle: str = Field(min_length=1)
+    plot_handle: str = Field(min_length=1)
+    min_distance_m: float | None = Field(default=None, ge=0, description="Required minimum, e.g. 4.0 (wall with windows)")
+    boundary_min_m: dict[int, float] = Field(
+        default_factory=dict, description="Per boundary index overrides, e.g. {2: 3.0} for a wall without windows"
+    )
+    report_within_m: float | None = Field(default=None, gt=0, description="Only report boundaries closer than this")
+    create_dimensions: bool = False
+    layer: str | None = Field(default=None, description="Layer for created dimensions (must exist)")
+    units: Literal["auto", "mm", "cm", "m"] = "auto"
 
 
 class AreaTakeoffRequest(BaseModel):

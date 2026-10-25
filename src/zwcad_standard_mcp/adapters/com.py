@@ -30,7 +30,8 @@ from zwcad_standard_mcp.models import (
 )
 
 from .base import CadAdapter
-from .dialogs import DialogWatchdog, click_dialog_button, find_process_dialogs
+from .detached import DetachedRunner
+from .dialogs import DialogWatchdog, click_dialog_button, find_process_dialogs, safe_answer_for
 from .selection import COMMON_DXF_TYPES, _wild, build_filter, dxf_name, escape_layer_name
 
 
@@ -78,6 +79,10 @@ class ComCadAdapter(CadAdapter):
         self._app: Any | None = None
         self._pythoncom: Any | None = None
         self._win32_client: Any | None = None
+        self._runner = DetachedRunner(
+            find_dialogs=lambda: find_process_dialogs(self._main_hwnd) if self._main_hwnd else [],
+            is_safe_dialog=lambda d: self.auto_dismiss_dialogs and safe_answer_for(d) is not None,
+        )
 
     def _load_win32(self) -> None:
         if sys.platform != "win32":
@@ -102,6 +107,8 @@ class ComCadAdapter(CadAdapter):
             pass
 
     def _connect(self, force: bool = False) -> Any:
+        # While a detached call waits in ZWCAD every COM call would hang: fail fast instead.
+        self._runner.ensure_idle()
         self._initialize_com()
         if self._app is not None and not force:
             try:
@@ -248,6 +255,12 @@ class ComCadAdapter(CadAdapter):
             "Closed",
             "Coordinates",
             "Measurement",
+            "StyleName",
+            "TextHeight",
+            "ScaleFactor",
+            "LinearScaleFactor",
+            "TextOverride",
+            "TextStyle",
         ):
             value = self._safe_get(entity, prop)
             if value is not None:
@@ -728,6 +741,7 @@ class ComCadAdapter(CadAdapter):
                     failed[name] = str(exc)
             style = doc.DimStyles.Add(spec.name) if created else doc.DimStyles.Item(spec.name)
             style.CopyFrom(doc)
+            refreshed = 0 if created else self._refresh_dimensions(doc, spec.name)
             if spec.set_current:
                 doc.ActiveDimStyle = style
             else:
@@ -743,7 +757,34 @@ class ComCadAdapter(CadAdapter):
             "variables_set": applied,
             "variables_failed": failed,
             "current": spec.set_current,
+            "dimensions_refreshed": refreshed,
         }
+
+    def _refresh_dimensions(self, doc: Any, style_name: str) -> int:
+        """Re-apply an updated dimension style to existing dimensions (they keep old geometry otherwise)."""
+        refreshed = 0
+        # Re-assigning the same StyleName is a no-op (verified live, FINDINGS #39): switch to another style and back.
+        other = next(
+            (str(s.Name) for s in self._iter_collection(doc.DimStyles) if str(s.Name).lower() != style_name.lower()),
+            None,
+        )
+        if other is None:
+            other = "_ZWCAD_MCP_TMP"
+            doc.DimStyles.Add(other)
+        with self._selection(doc) as selection:
+            filter_type = self._win32_client.VARIANT(self._pythoncom.VT_ARRAY | self._pythoncom.VT_I2, (0, 3))
+            filter_data = self._win32_client.VARIANT(
+                self._pythoncom.VT_ARRAY | self._pythoncom.VT_VARIANT, ("DIMENSION", style_name)
+            )
+            origin = self._point([0, 0, 0])
+            selection.Select(5, origin, origin, filter_type, filter_data)
+            for dim in self._iter_collection(selection):
+                with contextlib.suppress(Exception):
+                    dim.StyleName = other
+                    dim.StyleName = style_name
+                    dim.Update()
+                    refreshed += 1
+        return refreshed
 
     def create_hatch(self, request: HatchRequest) -> dict:
         doc = self._doc()
@@ -794,6 +835,16 @@ class ComCadAdapter(CadAdapter):
             except Exception as exc:
                 out[handle] = {"success": False, "error": str(exc)}
         return out
+
+    def polyline_points(self, handle: str) -> dict:
+        obj = self._handle_to_object(handle)
+        kind = dxf_name(str(self._safe_get(obj, "ObjectName", "")))
+        if kind not in {"LWPOLYLINE", "POLYLINE"}:
+            raise ValidationError(f"Entity {handle} is {kind}, expected a polyline.")
+        coords = list(obj.Coordinates)
+        step = 2 if kind == "LWPOLYLINE" else 3
+        points = [[float(coords[i]), float(coords[i + 1])] for i in range(0, len(coords) - step + 1, step)]
+        return {"type": kind, "closed": bool(self._safe_get(obj, "Closed", False)), "points": points}
 
     def drawing_units(self) -> int:
         try:
@@ -888,25 +939,64 @@ class ComCadAdapter(CadAdapter):
         }
 
     def open_document(self, path: str, read_only: bool = False) -> dict:
-        app = self._connect()
+        self._connect()
         target = Path(path).expanduser().resolve()
         if not target.exists():
             raise ValidationError(f"File does not exist: {path}")
-        try:
-            with self._dialog_guard():
-                doc = app.Documents.Open(str(target), read_only)
-        except ModalDialogError:
-            raise
-        except Exception as exc:
-            raise ValidationError(f"Cannot open document: {path}") from exc
-        return {
-            "dialogs": self.last_dialog_report,
-            "name": str(self._safe_get(doc, "Name", "")),
-            "full_name": str(self._safe_get(doc, "FullName", "")),
-            "path": str(self._safe_get(doc, "Path", "")),
-            "saved": bool(self._safe_get(doc, "Saved", False)),
-            "readonly": bool(self._safe_get(doc, "ReadOnly", False)),
-        }
+        pending = find_process_dialogs(self._main_hwnd)
+        if pending:
+            titles = ", ".join(repr(d.get("title")) for d in pending)
+            raise ModalDialogError(f"ZWCAD shows a modal dialog: {titles}", pending)
+        watchdog = DialogWatchdog(self._main_hwnd, auto_dismiss=self.auto_dismiss_dialogs)
+        pythoncom, win32_client, prog_id = self._pythoncom, self._win32_client, self.prog_id
+        guard_sysvars = self.GUARD_SYSVARS
+        safe_get = self._safe_get
+
+        def work() -> dict:
+            # Worker thread: own COM apartment and own proxy to the running ZWCAD (FINDINGS #37).
+            pythoncom.CoInitialize()
+            try:
+                app = win32_client.GetActiveObject(prog_id)
+                active = safe_get(app, "ActiveDocument")
+                saved: dict[str, Any] = {}
+                for name, value in guard_sysvars:
+                    try:
+                        old = active.GetVariable(name)
+                        if old != value:
+                            active.SetVariable(name, value)
+                            saved[name] = old
+                    except Exception:
+                        pass
+                watchdog.__enter__()
+                try:
+                    try:
+                        doc = app.Documents.Open(str(target), read_only)
+                    except Exception as exc:
+                        raise ValidationError(f"Cannot open document: {path} ({exc})") from exc
+                    data = {
+                        "name": str(safe_get(doc, "Name", "")),
+                        "full_name": str(safe_get(doc, "FullName", "")),
+                        "path": str(safe_get(doc, "Path", "")),
+                        "saved": bool(safe_get(doc, "Saved", False)),
+                        "readonly": bool(safe_get(doc, "ReadOnly", False)),
+                    }
+                finally:
+                    watchdog.__exit__(None, None, None)
+                    for name, old in saved.items():
+                        try:
+                            active.SetVariable(name, old)
+                        except Exception:
+                            pass
+                data["dialogs"] = {**watchdog.report(), "sysvars_overridden": sorted(saved)}
+                self.last_dialog_report = data["dialogs"]
+                return data
+            finally:
+                pythoncom.CoUninitialize()
+
+        return self._runner.run("open_document", work)
+
+    def job_status(self, job_id: str) -> dict:
+        return self._runner.status(job_id)
 
     def close_document(self, name: str, save_changes: bool = False) -> dict:
         app = self._connect()
@@ -966,7 +1056,8 @@ class ComCadAdapter(CadAdapter):
 
     def ensure_layers(self, layers: list[LayerSpec]) -> list[dict]:
         doc = self._doc()
-        existing = {item["name"].lower(): item for item in self.list_layers(detail=True)}
+        # Names only: reading 5 properties of every layer was the slowest part on 300-layer maps.
+        existing = {item["name"].lower(): item for item in self.list_layers(detail=False)}
         results: list[dict] = []
         with self._undo_group():
             for spec in layers:
