@@ -18,9 +18,10 @@ understanding unfamiliar drawings, normalizing imported entities, batch drafting
 multi-layout plotting, and block/title-block attribute maintenance.
 
 Safety rules:
-- Mutating tools default to dry_run=true.
-- Write operations are disabled unless ZWCAD_MCP_ALLOW_WRITE=true.
-- Delete and save require explicit confirmation parameters.
+- Mutating tools default to dry_run=true (preview).
+- In confirm mode "strict" (default) writes need confirm=true, deletes also second_confirm=true,
+  and saves need an explicit path. With ZWCAD_MCP_CONFIRM_MODE=off these flags are not required.
+  diagnose_cad reports the active mode.
 - Batch edits use a ZWCAD undo mark where the COM API supports it.
 - Prefer querying or reading selected objects before modifying them.
 """.strip()
@@ -45,6 +46,14 @@ def main() -> None:
         stream=sys.stderr,
         level=getattr(logging, settings.log_level, logging.INFO),
         format="[%(asctime)s] %(levelname)s %(name)s: %(message)s",
+    )
+    from zwcad_standard_mcp.permissions_bridge import confirm_mode
+
+    mode = confirm_mode()
+    logging.getLogger("zwcad_standard_mcp").info(
+        "Confirmation mode: %s%s", mode,
+        " (set ZWCAD_MCP_CONFIRM_MODE=off to run writes, deletes and saves without confirm flags)"
+        if mode == "strict" else " (writes, deletes and saves run without confirmation; set ZWCAD_MCP_CONFIRM_MODE=strict to restore)",
     )
     mcp = create_server(settings)
     if settings.transport in {"streamable-http", "streamable_http", "http"}:

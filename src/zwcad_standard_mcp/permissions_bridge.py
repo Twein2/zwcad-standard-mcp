@@ -9,6 +9,7 @@ decision is recorded to the v2 audit log.
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 from zwcad_standard_mcp.audit.operation_log import record
@@ -16,6 +17,17 @@ from zwcad_standard_mcp.permissions.manager import PermissionManager
 from zwcad_standard_mcp.permissions.policy import PermissionLevel
 
 _manager = PermissionManager()
+
+CONFIRM_MODE_ENV = "ZWCAD_MCP_CONFIRM_MODE"
+
+
+def confirm_mode() -> str:
+    """'strict' (default): confirm / second_confirm / save path are required.
+    'off': every write, delete and save runs without confirmation flags (dry_run previews still work).
+    Read on every call, so changing the variable only needs a server restart.
+    """
+    value = os.getenv(CONFIRM_MODE_ENV, "strict").strip().lower()
+    return "off" if value in {"off", "0", "false", "no", "none"} else "strict"
 
 
 def require_permission(
@@ -31,7 +43,12 @@ def require_permission(
     - MODIFY: allowed only when ``confirm`` is True.
     - DELETE: allowed only when ``confirm`` and ``second_confirm`` are True.
     - SAVE:   allowed only when ``file_path`` is provided and ``confirm`` is True.
+
+    With ZWCAD_MCP_CONFIRM_MODE=off every check passes (saving without a path saves in place).
     """
+    if confirm_mode() == "off":
+        record(operation=level.value, permission=level.value, result="allowed (confirm_mode=off)")
+        return None
     if level == PermissionLevel.SAVE:
         rejection: dict[str, Any] | None = (
             None

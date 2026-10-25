@@ -76,6 +76,11 @@ def build_filter(spec: EntityFilter) -> tuple[list[int], list[Any]]:
     return codes, values
 
 
+def escape_layer_name(name: str) -> str:
+    """Escape CAD wildcard characters so a real layer name matches only itself in a selection filter."""
+    return "".join("`" + ch if ch in "#@.*?~[]-," else ch for ch in name)
+
+
 def dxf_name(object_name: str) -> str:
     """Map a COM ObjectName (AcDbLine) to its DXF entity name (LINE)."""
     lowered = object_name.lower()

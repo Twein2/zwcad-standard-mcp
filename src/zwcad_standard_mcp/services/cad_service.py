@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import itertools
+import json
+import time
 import threading
 import uuid
 from datetime import datetime, timezone
@@ -22,12 +24,21 @@ from zwcad_standard_mcp.models import (
     EntityPropertyPatch,
     FilteredPropertyPatch,
     EntityQuerySpec,
+    LayerMapRequest,
+    AreaTakeoffRequest,
+    DimStyleSpec,
+    HatchRequest,
+    TextStyleSpec,
     LayerSpec,
+    LayerStandard,
     PlotScopeRequest,
+    TextUpdateRequest,
     TransformRequest,
 )
+from zwcad_standard_mcp.adapters.selection import _wild
+from zwcad_standard_mcp import textops
 from zwcad_standard_mcp.permissions.policy import PermissionLevel
-from zwcad_standard_mcp.permissions_bridge import require_permission
+from zwcad_standard_mcp.permissions_bridge import confirm_mode, require_permission
 
 
 # In-memory batch job registry. Jobs are transient; they live only as long as the
@@ -173,9 +184,11 @@ class CadService:
         result = self.adapter.diagnose()
         result["server_policy"] = {
             "permission_model": "per-call confirm (v2)",
-            "write_requires_confirm": True,
-            "delete_requires_second_confirm": True,
-            "save_requires_path_and_confirm": True,
+            "confirm_mode": confirm_mode(),
+            "write_requires_confirm": confirm_mode() == "strict",
+            "delete_requires_second_confirm": confirm_mode() == "strict",
+            "save_requires_path_and_confirm": confirm_mode() == "strict",
+            "how_to_change": "Set ZWCAD_MCP_CONFIRM_MODE=off (or strict) in the MCP server env and restart the client.",
             "adapter": self.settings.adapter,
             "max_batch_size": self.settings.max_batch_size,
             "max_query_results": self.settings.max_query_results,
@@ -333,8 +346,6 @@ class CadService:
         if rejection:
             return rejection
         self._ensure_write()
-        if not confirm:
-            raise ValidationError("Saving requires confirm=true after the user has reviewed the target path.")
         if file_path:
             target = Path(file_path).expanduser()
             if target.exists() and not target.is_file():
@@ -469,6 +480,395 @@ class CadService:
         result = self.adapter.update_entities_by_filter(patch.filter, properties)
         return {"success": result["failed"] == 0, "dry_run": False, "set": properties, **result}
 
+    # --- layer standard mapping -----------------------------------------------------
+
+    _PROTECTED_LAYERS = {"defpoints"}
+    _SECONDS_PER_MOVED_ENTITY = 0.017  # measured on ZWCAD 2024 Standard (FINDINGS #31)
+
+    def _load_layer_standard(self, request: LayerMapRequest) -> LayerStandard:
+        if request.standard is not None and request.standard_path:
+            raise ValidationError("Give either 'standard' or 'standard_path', not both.")
+        if request.standard is not None:
+            standard = request.standard
+        elif request.standard_path:
+            path = Path(request.standard_path)
+            if not path.is_file():
+                raise ValidationError(f"Layer standard file not found: {path}")
+            try:
+                standard = LayerStandard.model_validate(json.loads(path.read_text(encoding="utf-8-sig")))
+            except Exception as exc:
+                raise ValidationError(f"Invalid layer standard file {path}: {exc}") from exc
+        else:
+            raise ValidationError("A layer standard is required ('standard' or 'standard_path').")
+        if not standard.rules:
+            raise ValidationError("The layer standard has no mapping rules.")
+        return standard
+
+    def _plan_layer_map(self, standard: LayerStandard) -> dict:
+        layers = [item["name"] for item in self.adapter.list_layers(detail=False)]
+        existing = {name.lower(): name for name in layers}
+        counts = self.adapter.count_entities(EntityFilter(space="all"), ["layer"]).get("by_layer", {})
+        counts_ci = {name.lower(): count for name, count in counts.items()}
+
+        mapped: dict[str, str] = {}
+        unmatched: dict[str, int] = {}
+        for name in layers:
+            low = name.lower()
+            if low in self._PROTECTED_LAYERS or "|" in name:
+                continue
+            rule = next((r for r in standard.rules if _wild(name, [r.source])), None)
+            if rule is None:
+                if counts_ci.get(low, 0):
+                    unmatched[name] = counts_ci[low]
+                continue
+            if low == rule.target.lower():
+                continue
+            mapped[name] = rule.target
+
+        by_target: dict[str, list[str]] = {}
+        for source, target in mapped.items():
+            by_target.setdefault(target, []).append(source)
+
+        steps: list[dict] = []
+        for target, sources in by_target.items():
+            renamed = None
+            if target.lower() not in existing:
+                candidates = [s for s in sources if s != "0"]
+                if candidates:
+                    renamed = max(candidates, key=lambda s: counts_ci.get(s.lower(), 0))
+            for source in sorted(sources, key=lambda s: (s != renamed, s.lower())):
+                steps.append(
+                    {
+                        "source": source,
+                        "target": target,
+                        "action": "rename" if source == renamed else "merge",
+                        "entities": counts_ci.get(source.lower(), 0),
+                    }
+                )
+
+        produced = {step["target"].lower() for step in steps if step["action"] == "rename"}
+        create = sorted(
+            {t for t in by_target if t.lower() not in existing and t.lower() not in produced}
+            | {spec.name for spec in standard.layers if spec.name.lower() not in existing and spec.name.lower() not in produced}
+        )
+        merge_entities = sum(step["entities"] for step in steps if step["action"] == "merge")
+        return {
+            "steps": steps,
+            "create_layers": create,
+            "unmatched_layers_with_entities": dict(sorted(unmatched.items(), key=lambda kv: -kv[1])),
+            "empty_layers": sorted(name for name in layers if not counts_ci.get(name.lower(), 0)),
+            "merge_entities": merge_entities,
+            "estimated_merge_s": round(merge_entities * self._SECONDS_PER_MOVED_ENTITY, 1),
+        }
+
+    def map_layers(self, request: LayerMapRequest, dry_run: bool = True, confirm: bool = False) -> dict:
+        standard = self._load_layer_standard(request)
+        plan = self._plan_layer_map(standard)
+        if dry_run:
+            summary = {
+                "success": True,
+                "dry_run": True,
+                "renames": sum(1 for s in plan["steps"] if s["action"] == "rename"),
+                "merges": sum(1 for s in plan["steps"] if s["action"] == "merge"),
+                "create_layers": plan["create_layers"],
+                "merge_entities": plan["merge_entities"],
+                "estimated_merge_s": plan["estimated_merge_s"],
+                "unmatched_layers_with_entities": plan["unmatched_layers_with_entities"],
+                "empty_layers_count": len(plan["empty_layers"]),
+            }
+            if request.verbose:
+                return {**summary, "steps": plan["steps"], "empty_layers": plan["empty_layers"]}
+            targets: dict[str, dict] = {}
+            for step in plan["steps"]:
+                entry = targets.setdefault(step["target"], {"rename_from": None, "merge": {}, "empty_sources": 0})
+                if step["action"] == "rename":
+                    entry["rename_from"] = step["source"]
+                elif step["entities"]:
+                    entry["merge"][step["source"]] = step["entities"]
+                else:
+                    entry["empty_sources"] += 1
+            return {**summary, "targets": targets}
+        rejection = require_permission(PermissionLevel.MODIFY, confirm=confirm)
+        if rejection:
+            return rejection
+        self._ensure_write()
+        started = time.monotonic()
+        budget = request.time_budget_s
+        results: dict[str, Any] = {"renamed": [], "merged": [], "deleted": [], "delete_failed": [], "errors": []}
+
+        for step in (s for s in plan["steps"] if s["action"] == "rename"):
+            outcome = self.adapter.rename_layer(step["source"], step["target"])
+            (results["renamed"] if outcome.get("success") else results["errors"]).append(outcome)
+
+        specs = {spec.name.lower(): spec for spec in standard.layers}
+        for name in plan["create_layers"]:
+            specs.setdefault(name.lower(), LayerSpec(name=name))
+        if specs:
+            layer_results = self.adapter.ensure_layers(list(specs.values()))
+            results["errors"].extend(item for item in layer_results if not item.get("success"))
+            results["layers_ensured"] = len(layer_results)
+
+        incomplete: list[str] = []
+        for step in (s for s in plan["steps"] if s["action"] == "merge"):
+            if not step["entities"]:
+                # Empty source: nothing to move, delete it directly (no selection round-trip).
+                if request.purge_sources:
+                    deleted = self.adapter.delete_layer(step["source"])
+                    (results["deleted"] if deleted.get("success") else results["delete_failed"]).append(deleted)
+                continue
+            left = budget - (time.monotonic() - started)
+            if left <= 1:
+                incomplete.append(step["source"])
+                continue
+            moved = self.adapter.move_layer_entities(step["source"], step["target"], left)
+            results["merged"].append({"source": step["source"], "target": step["target"], **moved})
+            if moved.get("remaining") or moved.get("failed"):
+                incomplete.append(step["source"])
+                continue
+            if request.purge_sources:
+                deleted = self.adapter.delete_layer(step["source"])
+                (results["deleted"] if deleted.get("success") else results["delete_failed"]).append(deleted)
+
+        if request.purge_unused and not incomplete:
+            # Never purge layers that the standard defines or targets, even when they are empty.
+            keep = {spec.name.lower() for spec in standard.layers} | {rule.target.lower() for rule in standard.rules}
+            for name in plan["empty_layers"]:
+                if name.lower() in keep:
+                    continue
+                if name == "0" or name.lower() in self._PROTECTED_LAYERS or "|" in name:
+                    continue
+                if any(name.lower() == step["source"].lower() for step in plan["steps"]):
+                    continue
+                deleted = self.adapter.delete_layer(name)
+                (results["deleted"] if deleted.get("success") else results["delete_failed"]).append(deleted)
+
+        merged = results["merged"]
+        out = {
+            "success": not results["errors"] and not incomplete,
+            "dry_run": False,
+            "complete": not incomplete,
+            "incomplete_sources": incomplete,
+            "hint": "Run map_layers again to continue." if incomplete else None,
+            "renamed": [f"{item['source']} -> {item['target']}" for item in results["renamed"]],
+            "layers_ensured": results.get("layers_ensured", 0),
+            "merged_sources": len(merged),
+            "moved_entities": sum(item.get("moved", 0) for item in merged),
+            "move_failures": [item for item in merged if item.get("failed")][:10],
+            "deleted_count": len(results["deleted"]),
+            "delete_failed": results["delete_failed"][:20],
+            "errors": results["errors"][:20],
+            "elapsed_s": round(time.monotonic() - started, 3),
+        }
+        if request.verbose:
+            out["merged"] = merged
+            out["deleted"] = [item["name"] for item in results["deleted"]]
+        return out
+
+    # --- text editing -------------------------------------------------------------
+
+    def _new_text(self, request: TextUpdateRequest, item: dict) -> str:
+        text = item["text"]
+        if request.operation == "set":
+            return request.value or ""
+        if request.operation == "replace":
+            return textops.replace_text(
+                text, request.find or "", request.replacement, regex=request.regex, case_sensitive=request.case_sensitive
+            )
+        if request.operation == "strip_formatting":
+            return textops.strip_mtext_formatting(text) if item["type"] == "MTEXT" else text
+        return textops.repair_mojibake(text, request.wrong_codepage)
+
+    def update_text_entities(self, request: TextUpdateRequest, dry_run: bool = True, confirm: bool = False) -> dict:
+        allowed = {"TEXT", "MTEXT"}
+        flt = request.filter
+        if not flt.entity_types:
+            flt = flt.model_copy(update={"entity_types": sorted(allowed)})
+        elif set(flt.entity_types) - allowed:
+            raise ValidationError("update_text_entities works on TEXT and MTEXT only.")
+        if request.operation == "set" and request.value is None:
+            raise ValidationError("operation=set needs 'value'.")
+        if request.operation == "replace" and not request.find:
+            raise ValidationError("operation=replace needs 'find'.")
+        if request.operation == "repair_encoding":
+            try:
+                "".encode(request.wrong_codepage)
+            except LookupError as exc:
+                raise ValidationError(f"Unknown codepage: {request.wrong_codepage}") from exc
+
+        found = self.adapter.read_texts(flt, self.settings.max_batch_size)
+        if found["truncated"]:
+            raise BatchLimitError(
+                f"Filter matches {found['count']} texts; maximum is {self.settings.max_batch_size} (narrow the filter)."
+            )
+        try:
+            changes = [(item["handle"], new, item) for item in found["items"] if (new := self._new_text(request, item)) != item["text"]]
+        except Exception as exc:  # bad regex
+            raise ValidationError(f"Text operation failed: {exc}") from exc
+
+        def _height(item: dict) -> float | None:
+            # Stripping a leading \H code must keep the visible size (FINDINGS #34).
+            if request.operation == "strip_formatting" and item["type"] == "MTEXT":
+                return textops.mtext_leading_height(item["text"])
+            return None
+
+        writes = [(h, new, _height(item)) for h, new, item in changes]
+        sample = [
+            {"handle": h, "type": item["type"], "before": item["text"], "after": new, **({"height": hh} if hh is not None else {})}
+            for (h, new, item), (_, _, hh) in zip(changes[:10], writes[:10])
+        ]
+        if dry_run:
+            return {
+                "success": True,
+                "dry_run": True,
+                "filter": flt.model_dump(exclude_none=True),
+                "matched": found["count"],
+                "would_change": len(changes),
+                "sample": sample,
+            }
+        rejection = require_permission(PermissionLevel.MODIFY, confirm=confirm)
+        if rejection:
+            return rejection
+        self._ensure_write()
+        result = self.adapter.write_texts(writes, request.time_budget_s)
+        return {
+            "success": result["failed"] == 0 and result["remaining"] == 0,
+            "dry_run": False,
+            "matched": found["count"],
+            "to_change": len(changes),
+            **result,
+            "sample": sample[:3],
+            "hint": "Run again to continue." if result["remaining"] else None,
+        }
+
+    # --- annotation styles ------------------------------------------------------------
+
+    def ensure_text_styles(self, styles: list[TextStyleSpec], dry_run: bool = True, confirm: bool = False) -> dict:
+        self._limit(styles, "styles")
+        if dry_run:
+            plan = [{"name": s.name, "operation": "update" if self.adapter.style_exists("text", s.name) else "create",
+                     "font": s.font} for s in styles]
+            return {"success": True, "dry_run": True, "planned": plan}
+        rejection = require_permission(PermissionLevel.MODIFY, confirm=confirm)
+        if rejection:
+            return rejection
+        self._ensure_write()
+        results = []
+        for spec in styles:
+            try:
+                results.append(self.adapter.ensure_text_style(spec))
+            except Exception as exc:
+                results.append({"name": spec.name, "success": False, "error": str(exc)})
+        return {"success": all(r.get("success") for r in results), "dry_run": False, "results": results}
+
+    def ensure_dim_styles(self, styles: list[DimStyleSpec], dry_run: bool = True, confirm: bool = False) -> dict:
+        self._limit(styles, "styles")
+        for spec in styles:
+            bad = [k for k in spec.extra if not k.upper().startswith("DIM")]
+            if bad:
+                raise ValidationError(f"extra may contain DIM* variables only, got: {bad}")
+            if spec.text_style and not self.adapter.style_exists("text", spec.text_style):
+                raise ValidationError(f"Text style not found: {spec.text_style} (create it with ensure_text_styles).")
+        if dry_run:
+            plan = [{"name": s.name, "operation": "update" if self.adapter.style_exists("dim", s.name) else "create",
+                     "variables": s.model_dump(exclude={"name"}, exclude_none=True)} for s in styles]
+            return {"success": True, "dry_run": True, "planned": plan}
+        rejection = require_permission(PermissionLevel.MODIFY, confirm=confirm)
+        if rejection:
+            return rejection
+        self._ensure_write()
+        results = []
+        for spec in styles:
+            try:
+                results.append(self.adapter.ensure_dim_style(spec))
+            except Exception as exc:
+                results.append({"name": spec.name, "success": False, "error": str(exc)})
+        return {"success": all(r.get("success") for r in results), "dry_run": False, "results": results}
+
+    # --- hatch and site balance -------------------------------------------------------
+
+    _UNIT_TO_M2 = {4: 1e-6, 5: 1e-4, 6: 1.0}
+    _UNIT_NAMES = {"mm": 4, "cm": 5, "m": 6}
+
+    def create_hatch(self, request: HatchRequest, dry_run: bool = True, confirm: bool = False) -> dict:
+        handles = [request.outer_handle, *request.inner_handles]
+        areas = self.adapter.curve_areas(handles)
+        problems = {h: a.get("error") or "boundary is not closed" for h, a in areas.items()
+                    if not a.get("success") or not a.get("closed", True)}
+        if problems:
+            raise ValidationError(f"Invalid hatch boundaries: {problems}")
+        if request.layer:
+            existing = {item["name"].lower() for item in self.adapter.list_layers(detail=False)}
+            if request.layer.lower() not in existing:
+                raise ValidationError(f"Layer does not exist: {request.layer} (create it with ensure_layers).")
+        expected = areas[request.outer_handle]["area"] - sum(areas[h]["area"] for h in request.inner_handles)
+        if dry_run:
+            return {"success": True, "dry_run": True, "boundaries": areas, "expected_area": expected,
+                    "pattern": request.pattern, "layer": request.layer}
+        rejection = require_permission(PermissionLevel.MODIFY, confirm=confirm)
+        if rejection:
+            return rejection
+        self._ensure_write()
+        result = self.adapter.create_hatch(request)
+        result["expected_area"] = expected
+        return result
+
+    def area_takeoff(self, request: AreaTakeoffRequest) -> dict:
+        groups: dict[str, list[str]] = {
+            "plot": [request.plot_handle],
+            "buildings": request.building_handles,
+            "paved": request.paved_handles,
+            **request.other_handles,
+        }
+        all_handles = [h for hs in groups.values() for h in hs]
+        self._limit(all_handles, "handles")
+        areas = self.adapter.curve_areas(all_handles)
+        errors = {h: a.get("error") or "not closed" for h, a in areas.items() if not a.get("success") or not a.get("closed", True)}
+        if errors:
+            raise ValidationError(f"Cannot measure: {errors}")
+        insunits = self._UNIT_NAMES[request.units] if request.units != "auto" else self.adapter.drawing_units()
+        factor = self._UNIT_TO_M2.get(insunits)
+        if factor is None:
+            raise ValidationError(f"Drawing units unknown (INSUNITS={insunits}); pass units='mm'|'cm'|'m'.")
+
+        def total(name: str) -> float:
+            return round(sum(areas[h]["area"] for h in groups.get(name, [])) * factor, 2)
+
+        plot = total("plot")
+        sums = {name: total(name) for name in groups if name != "plot"}
+        occupied = sum(sums.values())
+        pbc = round(plot - occupied, 2)
+
+        def pct(value: float) -> float:
+            return round(100.0 * value / plot, 2) if plot else 0.0
+
+        result: dict[str, Any] = {
+            "success": True,
+            "units": {4: "mm", 5: "cm", 6: "m"}[insunits],
+            "plot_m2": plot,
+            "areas_m2": sums,
+            "biologically_active_m2": pbc,
+            "percent_of_plot": {**{k: pct(v) for k, v in sums.items()}, "biologically_active": pct(pbc)},
+            "assumption": "PBC = plot - all listed areas; outlines must not overlap and must lie inside the plot.",
+        }
+        if request.gross_floor_area_m2 is not None and plot:
+            result["intensity"] = round(request.gross_floor_area_m2 / plot, 3)
+        checks = []
+        lim = request.limits
+        if lim.min_pbc_percent is not None:
+            checks.append({"check": "PBC >= min", "limit": lim.min_pbc_percent, "value": pct(pbc), "ok": pct(pbc) >= lim.min_pbc_percent})
+        if lim.max_building_percent is not None:
+            value = pct(sums.get("buildings", 0.0))
+            checks.append({"check": "buildings <= max", "limit": lim.max_building_percent, "value": value, "ok": value <= lim.max_building_percent})
+        if "intensity" in result:
+            if lim.min_intensity is not None:
+                checks.append({"check": "intensity >= min", "limit": lim.min_intensity, "value": result["intensity"], "ok": result["intensity"] >= lim.min_intensity})
+            if lim.max_intensity is not None:
+                checks.append({"check": "intensity <= max", "limit": lim.max_intensity, "value": result["intensity"], "ok": result["intensity"] <= lim.max_intensity})
+        if checks:
+            result["checks"] = checks
+            result["all_ok"] = all(c["ok"] for c in checks)
+        return result
+
     # --- modal dialogs ----------------------------------------------------------------
 
     def list_cad_dialogs(self) -> dict:
@@ -582,8 +982,6 @@ class CadService:
         if rejection:
             return rejection
         self._ensure_write()
-        if not confirm:
-            raise ValidationError("Deleting entities requires confirm=true after previewing the handles.")
         results = self.adapter.delete_entities(handles)
         return {"success": True, "dry_run": False, **self._summary(results)}
 

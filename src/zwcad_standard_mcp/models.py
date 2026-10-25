@@ -142,3 +142,101 @@ class TransformRequest(BaseModel):
     def unique_handles(cls, value: list[str]) -> list[str]:
         return list(dict.fromkeys(handle.strip() for handle in value if handle.strip()))
 
+
+
+class LayerMapRule(BaseModel):
+    """Map every source layer matching ``source`` (CAD wildcards, comma lists) to ``target``."""
+
+    source: str = Field(min_length=1, description="Source layer name or wildcard, e.g. 'EGB_*' or 'OT*,KR*'")
+    target: str = Field(min_length=1, description="Target (office standard) layer name")
+
+
+class LayerStandard(BaseModel):
+    """Office layer standard: target layer definitions plus mapping rules (first matching rule wins)."""
+
+    layers: list[LayerSpec] = Field(default_factory=list)
+    rules: list[LayerMapRule] = Field(default_factory=list)
+
+
+class LayerMapRequest(BaseModel):
+    standard: LayerStandard | None = Field(default=None, description="Inline standard")
+    standard_path: str | None = Field(default=None, description="Path to a JSON file with the same structure")
+    purge_sources: bool = Field(default=True, description="Delete source layers once they are empty")
+    purge_unused: bool = Field(default=False, description="Also try to delete every other empty layer")
+    time_budget_s: float = Field(default=45.0, gt=1, le=55, description="Stop moving entities after this time")
+    verbose: bool = Field(default=False, description="Return every step and layer name instead of a summary")
+
+
+class TextUpdateRequest(BaseModel):
+    """Bulk edit of TEXT/MTEXT content selected by a CAD-side filter."""
+
+    filter: EntityFilter = Field(default_factory=lambda: EntityFilter(entity_types=["TEXT", "MTEXT"]))
+    operation: Literal["set", "replace", "strip_formatting", "repair_encoding"]
+    value: str | None = Field(default=None, description="New text for operation=set")
+    find: str | None = Field(default=None, description="Text or regex to find for operation=replace")
+    replacement: str = Field(default="", description="Replacement for operation=replace")
+    regex: bool = False
+    case_sensitive: bool = True
+    wrong_codepage: str = Field(default="cp1250", description="Codepage the UTF-8 bytes were wrongly read with")
+    time_budget_s: float = Field(default=45.0, gt=1, le=55)
+
+
+class TextStyleSpec(BaseModel):
+    """Text style with a TrueType font (avoids '?' for Polish characters, en dash and multiplication sign)."""
+
+    name: str = Field(min_length=1)
+    font: str = Field(default="Arial", description="TrueType family name, e.g. 'Arial', 'Arial Narrow', 'ISOCPEUR'")
+    bold: bool = False
+    italic: bool = False
+    height: float = Field(default=0.0, ge=0, description="0 = height set per text")
+    width_factor: float = Field(default=1.0, gt=0)
+    oblique_deg: float = 0.0
+
+
+class DimStyleSpec(BaseModel):
+    """Dimension style created from DIM* system variables (CopyFrom the document)."""
+
+    name: str = Field(min_length=1)
+    text_style: str | None = Field(default=None, description="DIMTXSTY")
+    text_height: float | None = Field(default=None, gt=0, description="DIMTXT")
+    arrow_size: float | None = Field(default=None, ge=0, description="DIMASZ")
+    arrow_block: str | None = Field(default=None, description="DIMBLK, e.g. '_ARCHTICK', '_OBLIQUE', '' for closed filled")
+    overall_scale: float | None = Field(default=None, gt=0, description="DIMSCALE")
+    linear_scale: float | None = Field(default=None, gt=0, description="DIMLFAC, e.g. 0.01 to show metres in a cm drawing")
+    decimals: int | None = Field(default=None, ge=0, le=8, description="DIMDEC")
+    decimal_separator: str | None = Field(default=None, max_length=1, description="DIMDSEP, e.g. ','")
+    text_gap: float | None = Field(default=None, description="DIMGAP")
+    ext_line_offset: float | None = Field(default=None, description="DIMEXO")
+    ext_line_extension: float | None = Field(default=None, description="DIMEXE")
+    extra: dict[str, float | int | str] = Field(default_factory=dict, description="Other DIM* variables")
+    set_current: bool = False
+
+
+class HatchRequest(BaseModel):
+    outer_handle: str = Field(min_length=1, description="Closed boundary (polyline, circle, region)")
+    inner_handles: list[str] = Field(default_factory=list, description="Islands, e.g. building outlines")
+    pattern: str = Field(default="SOLID", description="Predefined pattern name: SOLID, ANSI31, ANSI37, AR-CONC ...")
+    scale: float = Field(default=1.0, gt=0)
+    angle_deg: float = 0.0
+    layer: str | None = None
+    color: int | None = Field(default=None, ge=0, le=256)
+    associative: bool = True
+
+
+class AreaLimits(BaseModel):
+    min_pbc_percent: float | None = Field(default=None, description="Minimum biologically active area, % of plot")
+    max_building_percent: float | None = Field(default=None, description="Maximum building footprint, % of plot")
+    min_intensity: float | None = None
+    max_intensity: float | None = None
+
+
+class AreaTakeoffRequest(BaseModel):
+    """Site balance (bilans terenu) from closed outlines; areas are assumed not to overlap."""
+
+    plot_handle: str = Field(min_length=1)
+    building_handles: list[str] = Field(default_factory=list)
+    paved_handles: list[str] = Field(default_factory=list)
+    other_handles: dict[str, list[str]] = Field(default_factory=dict, description="Extra named groups, e.g. {'water': [...]}")
+    gross_floor_area_m2: float | None = Field(default=None, ge=0, description="For building intensity (MPZP 'intensywność')")
+    units: Literal["auto", "mm", "cm", "m"] = "auto"
+    limits: AreaLimits = Field(default_factory=AreaLimits)

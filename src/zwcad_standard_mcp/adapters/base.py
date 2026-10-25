@@ -4,6 +4,9 @@ from abc import ABC, abstractmethod
 from typing import Any, Iterable
 
 from zwcad_standard_mcp.models import (
+    DimStyleSpec,
+    HatchRequest,
+    TextStyleSpec,
     EntityCreateSpec,
     EntityFilter,
     EntityQuerySpec,
@@ -162,6 +165,55 @@ class CadAdapter(ABC):
     @abstractmethod
     def update_entities_by_filter(self, flt: EntityFilter, properties: dict[str, Any]) -> dict:
         """Apply ``properties`` to every matching entity without per-entity snapshots."""
+
+    # --- Layer mapping and text editing ----------------------------------------------
+
+    def rename_layer(self, old: str, new: str) -> dict:
+        raise NotImplementedError
+
+    def move_layer_entities(self, source: str, target: str, time_budget_s: float) -> dict:
+        """Move every entity on ``source`` (all spaces) to ``target``.
+
+        Returns ``{"matched", "moved", "failed", "remaining", "elapsed_s"}``; stops when the budget is spent.
+        """
+        raise NotImplementedError
+
+    def delete_layer(self, name: str) -> dict:
+        raise NotImplementedError
+
+    def read_texts(self, flt: EntityFilter, limit: int) -> dict:
+        """Return ``{"count", "items": [{"handle", "type", "text"}], "truncated"}`` for TEXT/MTEXT."""
+        raise NotImplementedError
+
+    def write_texts(self, changes: list[tuple[str, str, float | None]], time_budget_s: float) -> dict:
+        """Set TextString (and Height when not None) by handle.
+
+        Returns ``{"changed", "failed", "failures_sample", "remaining"}``.
+        """
+        raise NotImplementedError
+
+    # --- Annotation styles, hatching, areas ---------------------------------------
+
+    def ensure_text_style(self, spec: "TextStyleSpec") -> dict:
+        raise NotImplementedError
+
+    def ensure_dim_style(self, spec: "DimStyleSpec") -> dict:
+        raise NotImplementedError
+
+    def style_exists(self, kind: str, name: str) -> bool:
+        """kind: 'text' or 'dim'."""
+        raise NotImplementedError
+
+    def create_hatch(self, request: "HatchRequest") -> dict:
+        raise NotImplementedError
+
+    def curve_areas(self, handles: list[str]) -> dict[str, dict]:
+        """``{handle: {"success", "type", "closed", "area", "layer"}}`` in drawing units."""
+        raise NotImplementedError
+
+    def drawing_units(self) -> int:
+        """INSUNITS value (4 = mm, 5 = cm, 6 = m, 0 = unitless)."""
+        raise NotImplementedError
 
     # --- Modal dialog handling ------------------------------------------------------
 

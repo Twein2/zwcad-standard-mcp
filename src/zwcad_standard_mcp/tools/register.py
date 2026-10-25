@@ -4,6 +4,7 @@ from typing import Any
 
 from zwcad_standard_mcp.services import CadService
 
+from .annotation_tools import register_annotation_tools
 from .block_tools import register_block_tools
 from .document_tools import register_document_tools
 from .drawing_tools import register_drawing_tools
@@ -23,3 +24,4 @@ def register_all_tools(mcp: Any, service: CadService) -> None:
     register_drawing_tools(mcp, service)
     register_layout_tools(mcp, service)
     register_block_tools(mcp, service)
+    register_annotation_tools(mcp, service)

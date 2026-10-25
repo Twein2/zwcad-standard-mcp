@@ -43,19 +43,25 @@ MCP Python SDK.
 | Fear of accidental changes or deletions | dry-run by default, per-call `confirm`, second confirmation for delete/save, undo marks |
 | ZWCAD dialogs block automation | `list_cad_dialogs`, `dismiss_cad_dialog`, dialog guard |
 
-## Tools (42)
+## Tools (48)
 
 **System**: `diagnose_cad`, `get_cad_app_info`, `audit_drawing`, `list_cad_dialogs`, `dismiss_cad_dialog`
 
 **Documents**: `get_current_document`, `list_documents`, `activate_document`, `save_document`
 
-**Layers**: `list_layers`, `ensure_layers`
+**Layers**: `list_layers`, `ensure_layers`, `map_layers` (apply an office layer standard from JSON: rename,
+merge, purge; see `examples/layer_standard_geodetic_map.json`)
 
 **Entities**:
 - Read and select: `count_entities`, `select_entities`, `get_selected_entities`, `query_entities`,
   `get_entity_details`
 - Change: `update_entity_properties`, `update_entities_by_filter`, `normalize_selected_entities`,
   `transform_entities`, `delete_entities`
+- Text: `update_text_entities` (set, find/replace, strip MText formatting, repair UTF-8 read as cp1250)
+
+**Annotation and areas**: `ensure_text_styles` (TrueType, Polish characters), `ensure_dim_styles` (e.g. cm
+drawing dimensioned in metres), `create_hatch` (islands, layer, area), `area_takeoff` (site balance: plot,
+buildings, paving, biologically active area, intensity, checks against MPZP limits)
 
 **Drawing**: `create_entities_batch`. Supports lines, circles, arcs, lightweight polylines, text, MText, block
 references, and aligned, rotated, radial and diametric dimensions.
@@ -105,31 +111,103 @@ ZWCAD evaluates the filter itself, so the server does not iterate entities over 
 - **Dialogs.** Only dialogs in a small safe list are answered automatically. Licence, recovery, save and
   unknown dialogs are never answered; they are reported instead.
 
+### Turning confirmations off
+
+If you work only on copies and do not want confirmation flags, set `ZWCAD_MCP_CONFIRM_MODE=off`:
+
+- at install time: `install.bat off`;
+- later: `.venv\Scripts\python.exe -m zwcad_standard_mcp.configure --confirm-mode off` (or edit the value in
+  `claude_desktop_config.json`), then restart Claude Desktop.
+
+`dry_run` previews stay available in both modes. Set the value back to `strict` to restore the checks.
+The active mode is printed to the server log at start-up and returned by `diagnose_cad`.
+
 ## Requirements
 
-- Windows 10/11
-- ZWCAD Standard with ActiveX/COM automation, running with at least one drawing open
-- Python 3.10+
+- Windows 10 or 11
+- ZWCAD Standard (tested with 2024) — the COM/ActiveX interface used here is part of the Standard edition
+- Python 3.10 or newer (3.11 recommended)
+- Claude Desktop, or another MCP client
+- Git (optional; a ZIP download works too)
 
 The default COM ProgID is `ZWCAD.Application`. Use `ZWCAD_MCP_PROG_ID` to change it, for example to
 `ZWCAD.Application.2024`.
 
-## Installation
+## Installation (Windows, about 5 minutes)
 
-One-click: run `install.bat`, start ZWCAD and open a drawing, then run `start.bat`.
+### 1. Install Python
 
-Command line:
+Download Python 3.11 from <https://www.python.org/downloads/windows/> and run the installer.
+On the first screen tick **"Add python.exe to PATH"**, then click **Install Now**.
+Check it in a new Command Prompt (`Win+R`, type `cmd`, Enter):
 
 ```bat
-py -3.11 -m venv .venv
-.venv\Scripts\activate
-pip install -e .
-python -m zwcad_standard_mcp.server
+py --version
 ```
 
-## MCP client configuration
+It should print `Python 3.11.x` (or newer).
 
-Copy `mcp-config.example.json` and adjust the absolute paths:
+### 2. Download the server
+
+Pick a short folder without spaces, for example `C:\MCP`.
+
+With Git:
+
+```bat
+mkdir C:\MCP
+cd /d C:\MCP
+git clone https://github.com/Twein2/zwcad-standard-mcp.git
+```
+
+Without Git: on the GitHub page click **Code → Download ZIP**, unpack it to `C:\MCP` and rename the folder
+to `zwcad-standard-mcp`.
+
+### 3. Install and register in Claude Desktop
+
+Double-click `C:\MCP\zwcad-standard-mcp\install.bat`. It:
+
+1. creates a private Python environment in `.venv` (nothing is installed system-wide);
+2. installs the server and its dependencies (pywin32, mcp, pydantic);
+3. adds the server to Claude Desktop's `claude_desktop_config.json` (a timestamped backup of the old file is
+   kept next to it; other servers in the file are not touched).
+
+To start without confirmation prompts (see [Safety defaults](#safety-defaults)), run it from a Command
+Prompt as `install.bat off`.
+
+### 4. Restart Claude Desktop
+
+Quit Claude Desktop completely (right-click the tray icon → **Quit**), then start it again.
+The tools appear under the connectors/tools menu as **zwcad-standard**.
+
+### 5. Check the connection
+
+Start ZWCAD and open a drawing, then ask Claude: *"Run diagnose_cad."* All checks should be `ok: true`, and
+`server_policy.confirm_mode` shows whether confirmations are on.
+
+### Updating
+
+```bat
+cd /d C:\MCP\zwcad-standard-mcp
+git pull
+install.bat
+```
+
+(ZIP users: download the new ZIP, unpack over the old folder, run `install.bat`.) Then restart Claude Desktop.
+
+### Troubleshooting
+
+| Symptom | Fix |
+|---|---|
+| `py` is not recognised | Reinstall Python with "Add python.exe to PATH", or open a new Command Prompt |
+| Tools do not appear in Claude | Quit Claude Desktop from the tray (closing the window is not enough) and start it again; check the log `%APPDATA%\Claude\logs\mcp-server-zwcad-standard.log` |
+| `diagnose_cad`: COM connection fails | Start ZWCAD first and open a drawing; if several ZWCAD versions are installed set `ZWCAD_MCP_PROG_ID` (e.g. `ZWCAD.Application.2024`) |
+| Calls hang until a timeout | A modal dialog is open in ZWCAD — ask Claude to run `list_cad_dialogs`, or close it by hand |
+| A call times out on a very large drawing | Use the filtered tools (`count_entities`, `update_entities_by_filter`, `map_layers`); long jobs stop before the client timeout and report what is left — run them again to continue |
+
+### Manual configuration (other MCP clients)
+
+`install.bat` writes the config for Claude Desktop. For other clients add this entry yourself (adjust the
+path), or run `.venv\Scripts\python.exe -m zwcad_standard_mcp.configure --config <path-to-config.json>`:
 
 ```json
 {
@@ -139,7 +217,8 @@ Copy `mcp-config.example.json` and adjust the absolute paths:
       "args": ["-m", "zwcad_standard_mcp.server"],
       "env": {
         "ZWCAD_MCP_PROG_ID": "ZWCAD.Application",
-        "ZWCAD_MCP_TRANSPORT": "stdio"
+        "ZWCAD_MCP_TRANSPORT": "stdio",
+        "ZWCAD_MCP_CONFIRM_MODE": "strict"
       }
     }
   }
@@ -151,6 +230,7 @@ Copy `mcp-config.example.json` and adjust the absolute paths:
 | Environment variable | Default | Meaning |
 |---|---|---|
 | `ZWCAD_MCP_PROG_ID` | `ZWCAD.Application` | COM ProgID |
+| `ZWCAD_MCP_CONFIRM_MODE` | `strict` | `strict`: writes need `confirm=true`, deletes also `second_confirm=true`, saves an explicit path. `off`: no confirmation flags needed |
 | `ZWCAD_MCP_AUTO_START` | `false` | Start ZWCAD when no running instance is found |
 | `ZWCAD_MCP_MAX_QUERY_RESULTS` | `10000` | Maximum results returned by a query |
 | `ZWCAD_MCP_MAX_BATCH_SIZE` | `10000` | Maximum entities written in one call |
