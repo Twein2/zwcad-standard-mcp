@@ -966,3 +966,28 @@
     (setq out (cons (list (cons "envelope_handle" h) (cons "intersections" n) (cons "min_distance" dmin)) out)))
   (reverse out)
 )
+
+;;; boundary parts the route has to violate: thick red polyline on the edge part + label
+;;; marks: list of (("from" x y) ("to" x y) ("text" . "...")) ; width / txth in drawing units
+(defun mo:mark-violations (lay marks width txth / out p1 p2 mid ang)
+  (if (not (tblsearch "LAYER" lay))
+    (entmake (list '(0 . "LAYER") '(100 . "AcDbSymbolTableRecord") '(100 . "AcDbLayerTableRecord")
+                   (cons 2 lay) '(70 . 0) '(62 . 1) '(6 . "Continuous"))))
+  (foreach m marks
+    (setq p1 (cdr (assoc "from" m)) p2 (cdr (assoc "to" m)))
+    (if (< (distance p1 p2) (* 2.0 width))      ; a point-like contact: show at least a short dash
+      (setq ang (angle p1 p2)
+            p1 (polar p1 (+ ang pi) width) p2 (polar p2 ang width)))
+    (setq mid (mapcar '(lambda (a b) (/ (+ a b) 2.0)) p1 p2)
+          ang (angle p1 p2))
+    (entmake (list '(0 . "LWPOLYLINE") '(100 . "AcDbEntity") (cons 8 lay) '(62 . 1)
+                   '(100 . "AcDbPolyline") '(90 . 2) '(70 . 0) (cons 43 width)
+                   (list 10 (car p1) (cadr p1)) (list 10 (car p2) (cadr p2))))
+    (setq out (cons (cdr (assoc 5 (entget (entlast)))) out))
+    (if (< (cos ang) -1e-9) (setq ang (+ ang pi)))  ; keep the label readable
+    (entmake (list '(0 . "TEXT") '(100 . "AcDbEntity") (cons 8 lay) '(62 . 1) '(100 . "AcDbText")
+                   (list 10 (car mid) (cadr mid) 0.0) (cons 40 txth) (cons 1 (cdr (assoc "text" m)))
+                   (cons 50 ang) '(72 . 1) (list 11 (car mid) (+ (cadr mid) (* 0.6 txth)) 0.0) '(100 . "AcDbText") '(73 . 0)))
+    (setq out (cons (cdr (assoc 5 (entget (entlast)))) out)))
+  (reverse out)
+)

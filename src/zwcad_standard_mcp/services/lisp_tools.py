@@ -318,6 +318,17 @@ class LispToolsMixin:
                       [{"gear": s["gear"], "vertices": s["vertices"]} for s in segments], codepage=cp),
             undo=True, name="draw_vehicle_route")
         out: dict[str, Any] = {"success": True, "dry_run": False, "plan_id": request.plan_id, "paths": drawn}
+        violations = result.get("violations") or []
+        if violations:
+            to_cm = {"mm": 0.1, "cm": 1.0, "m": 100.0}[plan["units"]]
+            unit = {"mm": 1.0, "cm": 0.1, "m": 0.001}[plan["units"]]
+            marks = [{"from": v["from"], "to": v["to"],
+                      "text": (f"naruszenie {v['intrusion'] * to_cm:.0f} cm" if v["crosses_boundary"]
+                               else f"za blisko {v['intrusion'] * to_cm:.0f} cm")} for v in violations]
+            out["violation_marks"] = self.adapter.lisp_call_expr(
+                lisp_call("mo:mark-violations", request.violation_layer, marks, 60.0 * unit, 250.0 * unit,
+                          codepage=cp), undo=True, name="mark_violations")
+            out["violations"] = violations
         if not request.verify:
             return out
         checks, envelopes = [], []
@@ -336,7 +347,7 @@ class LispToolsMixin:
                 envelopes.append(value["envelope_handle"])
         collision = self.adapter.lisp_call_expr(
             lisp_call("mo:envelope-check", plan["boundary_handle"], envelopes, codepage=cp), name="envelope_check") or []
-        ok = (all(c.get("feasible") is True for c in checks)
+        ok = (not violations and all(c.get("feasible") is True for c in checks)
               and all(c.get("steering_continuous") is True for c in checks if c["gear"] == "forward")
               and all(c.get("intersections") == 0 for c in collision))
         out.update({"swept_path": checks, "collision_check": collision, "verified": ok})

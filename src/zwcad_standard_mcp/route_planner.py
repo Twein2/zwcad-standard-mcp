@@ -788,9 +788,25 @@ def plan_route(boundary, start_vec, end_vec, vehicle: dict, units: str = "cm", *
 
     require_numpy()
     t0 = time.monotonic()
-    ref = route_rigid.plan_route(boundary, start_vec, end_vec, vehicle, units, max_gear_changes=max_gear_changes,
-                                 time_budget_s=min(60.0, 0.4 * time_budget_s), margin_mm=margin_mm,
-                                 allow_reverse=allow_reverse, anchor=anchor)
+    corridor_margin = margin_mm
+    try:
+        ref = route_rigid.plan_route(boundary, start_vec, end_vec, vehicle, units, max_gear_changes=max_gear_changes,
+                                     time_budget_s=min(60.0, 0.4 * time_budget_s), margin_mm=margin_mm,
+                                     allow_reverse=allow_reverse, anchor=anchor)
+    except route_rigid.PlanningError:
+        # the start or end pose itself is closer than the margin: find the corridor without margin and report
+        # the violated edges from the drivable route
+        corridor_margin = 0.0
+        ref = route_rigid.plan_route(boundary, start_vec, end_vec, vehicle, units, max_gear_changes=max_gear_changes,
+                                     time_budget_s=min(60.0, 0.4 * time_budget_s), margin_mm=0.0,
+                                     allow_reverse=allow_reverse, anchor=anchor)
+    if not ref.get("found") and corridor_margin > 0:
+        # no corridor with the margin: try without it, the violated edges are reported
+        ref2 = route_rigid.plan_route(boundary, start_vec, end_vec, vehicle, units, max_gear_changes=max_gear_changes,
+                                      time_budget_s=min(40.0, 0.25 * time_budget_s), margin_mm=0.0,
+                                      allow_reverse=allow_reverse, anchor=anchor)
+        if ref2.get("found"):
+            ref, corridor_margin = ref2, 0.0
     reference = ref.pop("_reference", None)
     ref.pop("_lattice", None)
     if not ref.get("found") or reference is None:
@@ -809,15 +825,16 @@ def plan_route(boundary, start_vec, end_vec, vehicle: dict, units: str = "cm", *
     out = {"units": units, "allow_reverse": allow_reverse, "margin": round(margin_mm * k, 3),
            "start_rear_axle": [round(v, 3) for v in start], "goal_rear_axle": [round(v, 3) for v in goal],
            "corridor": {"gear_changes": ref["gear_changes"], "length": ref["total_length"],
-                        "elapsed_s": ref["elapsed_s"]},
+                        "elapsed_s": ref["elapsed_s"], "margin_used": corridor_margin * k},
            "model": ("QuickTurn2 dynamic path: the guided axle (front when driving forward, rear when reversing) "
                      "follows tangent-continuous arcs with R >= RMIN = wheelbase / sin(lock); the car follows by "
                      "the exact tractrix step; reverse keeps the car axis tangent to the rear-axle path"),
            "front_axle_min_radius": round(math.hypot(car.rmin / 0.95, car.L), 2),
            "rear_axle_min_radius": round(car.rmin / 0.95, 2), **res}
     if not res["found"]:
-        out["reason"] = ("a corridor was found, but the drivable route (continuous steering) does not keep the "
-                         f"margin: min clearance {res['min_clearance']} < {round(margin_mm * k, 2)}, end reached: "
-                         f"{res['end_error']}; try a smaller margin_mm or more time")
+        out["reason"] = f"no drivable route reaches the end pose: {res['end_error']}"
+    elif res["violations"]:
+        out["warning"] = (f"the drivable route needs {len(res['violations'])} boundary edge(s) to be violated "
+                          "(closer than the margin or crossed); see violations, draw_vehicle_route marks them")
     out["elapsed_s"] = round(time.monotonic() - t0, 1)
     return out

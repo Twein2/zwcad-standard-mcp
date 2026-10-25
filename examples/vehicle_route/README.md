@@ -10,8 +10,9 @@ vector inside a closed boundary, draw it, and prove it with the vehicle swept pa
 > FRONT axle along a tangent-continuous path (straights + arcs with R ≥ wheelbase / sin(lock), as SCIEZKA's
 > fillets and QuickTurn2's dynamic path do) and move the car by the tractrix. `vehicle_swept_path` reported
 > "feasible" because it only checked the size of the steering angle, not its continuity; it now reports
-> `steering_continuous` / `max_steer_change_per_step_deg`, and `plan_vehicle_route` refuses kinked routes until
-> the QuickTurn-consistent planner (branch `wip/quickturn-route`) is finished.
+> `steering_continuous` / `max_steer_change_per_step_deg`, and `plan_vehicle_route` now plans in the QuickTurn model
+> (see below); when the margin cannot be kept it returns the drivable route together with the boundary edges that
+> would have to be violated, and `draw_vehicle_route` marks them on layer `SP_NARUSZENIE`.
 
 **Since 2026-10-25 the server does this itself:** `plan_vehicle_route` → `draw_vehicle_route` (see
 [Using the tools](#using-the-tools)). The rest of this page documents the first run, done with the scripts in
@@ -23,6 +24,20 @@ this folder before the tools existed; `plan_route.py` stays as a stand-alone ref
 and car outlines every 2 m (white), front / rear axle end positions (green). The forward route runs up the
 lane on the right and turns left to the north; the car then reverses in an arc into the bay on the left.
 Zero intersections with the boundary, minimum clearance 10.7 cm.*
+
+## How plan_vehicle_route works now (QuickTurn model)
+
+1. **Corridor** (`route_rigid.py`): fast hybrid A* in a simplified rigid model finds where the car can go and where
+   to change gear (a few seconds). Its path is *not* drawn: it may need instant steering changes.
+2. **Drivable route** (`route_qt.py`), built like QuickTurn2's dynamic path (`QT:DRAWDPATH`): the guided axle
+   follows arcs that start in the direction the wheels point, so the path is tangent-continuous, with
+   R >= wheelbase / sin(lock) (front axle 553 cm for the Cayenne, rear 471 cm); the car moves by the exact tractrix
+   (`QT:GETALIST`, the same step as `vehicle_swept_path`). The "clicked points" are placed automatically around
+   the corridor by a beam search; the last piece reaches the end vector exactly (reverse) or with <= 3 deg heading
+   lag (forward).
+3. **Margin not possible?** The least-violating drivable route is returned with `violations`: each boundary edge
+   the car comes closer to than `margin_mm` (or crosses), the affected part of the edge and the depth.
+   On the SOJ example: 5 edges, deepest 18 cm beyond the end of the inner wall of the lane.
 
 ## Using the tools
 

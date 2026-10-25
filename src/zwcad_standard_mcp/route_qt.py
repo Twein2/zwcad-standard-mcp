@@ -93,17 +93,19 @@ class Problem:
             r = self.r_front
             fx, fy = g[0] + self.L * math.cos(g[2]), g[1] + self.L * math.sin(g[2])
             variants = [((fx - d * math.cos(g[2]), fy - d * math.sin(g[2]), g[2]), d)
-                        for d in (2 * self.L, 4 * self.L, 6 * self.L)]
+                        for d in (0.5 * self.L, self.L, 2 * self.L, 3 * self.L, 4 * self.L)]
         else:
             r = self.r_rear
             variants = [((g[0], g[1], g[2] + math.pi), 0.0)]
         for q1, run_in in variants:
-            for _total, segs in dubins_words((gx, gy, tau), q1, r)[:4]:
+            for _total, segs in dubins_words((gx, gy, tau), q1, r):
                 pieces = [(sg / r, ln) for sg, ln in segs if ln > 1e-9] + ([(0.0, run_in)] if run_in else [])
                 poses, _, delta = self.run_poses(fwd, gx, gy, tau, phi, pieces)
                 end = poses[-1]
-                ok = (math.hypot(end[0] - g[0], end[1] - g[1]) <= 2.5 * self.res
-                      and abs(wrap(end[2] - g[2])) <= self.heading_tol)
+                # driving forward the car heading lags the front-axle path (tractrix): allow a few degrees
+                tol = self.heading_tol if not fwd else max(self.heading_tol, math.radians(3.0))
+                ok = (math.hypot(end[0] - g[0], end[1] - g[1]) <= 2.5 * self.res + self.L * math.sin(tol)
+                      and abs(wrap(end[2] - g[2])) <= tol)
                 out.append((pieces, poses, delta, ok))
         return out
 
@@ -241,19 +243,38 @@ def optimise(problem: Problem, runs, time_budget_s: float):
     return best
 
 
+def _finish(problem: Problem, fwd: bool, state, soft: bool, w_viol: float, best):
+    """Try the exact approach to the goal from one beam state; keep the better of it and ``best``."""
+    sc, x, y, phi, tau, _pf, rout, pl = state
+    L = problem.L
+    gx, gy = (x + L * math.cos(phi), y + L * math.sin(phi)) if fwd else (x, y)
+    for fp, fposes, _fdelta, ok in problem.final_pieces(fwd, gx, gy, tau, phi):
+        if not ok:
+            continue
+        viol = problem._violation(fposes)
+        if viol > 0 and not soft:
+            continue
+        total = sc + sum(ln for _, ln in fp) + w_viol * viol
+        if best is None or total < best[0]:
+            nr = [*rout[:-1], (rout[-1][0], rout[-1][1], rout[-1][2] + list(fp))]
+            best = (total, nr, pl + [fposes[1:]])
+    return best
+
+
 def beam_search(problem: Problem, runs, time_budget_s: float, width: int = 12, reach: float = 60.0,
-                step: float = 15.0):
+                step: float = 15.0, soft: bool = True, w_viol: float = 50.0):
     """Build the route click by click (like QT:DRAWDPATH): for every next reference point try offsets around it,
     keep the ``width`` best collision-free partial routes, finish with the exact approach to the goal."""
     t0 = time.monotonic()
     g = problem.goal
     f_last, w_last = runs[-1]
-    runs = runs[:-1] + [(f_last, [w for w in w_last if math.hypot(w[0] - g[0], w[1] - g[1]) > 3 * problem.L])]
+    runs = runs[:-1] + [(f_last, [w for w in w_last if math.hypot(w[0] - g[0], w[1] - g[1]) > 1.5 * problem.L])]
     offs = [(dx, dy) for dx in np.arange(-reach, reach + 1e-9, step) for dy in np.arange(-reach, reach + 1e-9, step)]
     wide = 3 * reach
     offs_wide = [(dx, dy) for dx in np.arange(-wide, wide + 1e-9, 2 * step)
                  for dy in np.arange(-wide, wide + 1e-9, 2 * step)]
     x, y, phi = problem.start
+    finished = [None]
     # beam state: (score, x, y, phi, tau, prev_fwd, runs_out[list of (fwd, start, pieces)], poses list)
     beam = [(0.0, x, y, phi, phi, None, [], [np.array([[x, y, phi]])])]
     L = problem.L
@@ -267,6 +288,10 @@ def beam_search(problem: Problem, runs, time_budget_s: float, width: int = 12, r
             else:
                 gx, gy, t0_ = x, y, (tau if pf is False else phi + math.pi)
             nb.append((sc, x, y, phi, (gx, gy, t0_), rout + [(fwd, (gx, gy, t0_), [])], pl))
+        if ri == len(runs) - 1:
+            for sc_, x_, y_, phi_, gq_, rout_, pl_ in nb[:3]:
+                finished[0] = _finish(problem, fwd, (sc_, x_, y_, phi_, gq_[2], fwd, rout_, pl_), soft, w_viol,
+                                      finished[0])
         cur = nb
         for wi, (wx, wy, wphi) in enumerate(wps):
             cand = []
@@ -279,17 +304,23 @@ def beam_search(problem: Problem, runs, time_budget_s: float, width: int = 12, r
                     if ln < 1e-6:
                         continue
                     poses, endq, delta = problem.run_poses(fwd, gq[0], gq[1], gq[2], phi, [(k, ln)])
-                    if problem._violation(poses) > 0.0:
+                    viol = problem._violation(poses)
+                    if viol > 0.0 and not soft:
                         continue
                     e = poses[-1]
                     dev = math.hypot(e[0] - (wx if not fwd else wx - L * math.cos(wphi)),
                                      e[1] - (wy if not fwd else wy - L * math.sin(wphi)))
-                    score = sc + ln + (0.5 if edge else 2.0) * dev + (0.2 if edge else 1.0) * L * abs(wrap(e[2] - wphi))
+                    score = (sc + ln + (0.5 if edge else 2.0) * dev + (0.2 if edge else 1.0) * L * abs(wrap(e[2] - wphi))
+                             + w_viol * viol)
                     nr = [*rout[:-1], (rout[-1][0], rout[-1][1], rout[-1][2] + [(k, ln)])]
                     cand.append((score, float(e[0]), float(e[1]), float(e[2]), endq, nr, pl + [poses[1:]]))
             if not cand:
                 break
             cand.sort(key=lambda c: c[0])
+            if ri == len(runs) - 1:      # last run: also try to finish from here (turn earlier, longer run-in)
+                for sc_, x_, y_, phi_, gq_, rout_, pl_ in cand[:3]:
+                    finished[0] = _finish(problem, fwd, (sc_, x_, y_, phi_, gq_[2], fwd, rout_, pl_), soft, w_viol,
+                                          finished[0])
             # keep diverse states: at most one per 10 cm cell and 3 degrees of heading
             seen, cur = set(), []
             for c in cand:
@@ -305,33 +336,57 @@ def beam_search(problem: Problem, runs, time_budget_s: float, width: int = 12, r
         beam = [(sc, x, y, phi, gq[2], fwd, rout, pl) for sc, x, y, phi, gq, rout, pl in cur]
         if not beam:
             return None
-    # exact approach to the goal from every beam state (last run continues in its gear)
-    best = None
-    f_last = runs[-1][0]
-    for sc, x, y, phi, tau, pf, rout, pl in beam:
-        if f_last:
-            gx, gy = x + L * math.cos(phi), y + L * math.sin(phi)
-        else:
-            gx, gy = x, y
-        for fp, fposes, fdelta, ok in problem.final_pieces(f_last, gx, gy, tau, phi):
-            if not ok:
-                continue
-            viol = problem._violation(fposes)
-            if viol > 0:
-                continue
-            total = sc + sum(ln for _, ln in fp)
-            if best is None or total < best[0]:
-                nr = [*rout[:-1], (rout[-1][0], rout[-1][1], rout[-1][2] + list(fp))]
-                best = (total, nr, pl + [fposes[1:]])
+    # exact approach to the goal from every final beam state (last run continues in its gear)
+    best = finished[0]
+    for st in beam:
+        best = _finish(problem, runs[-1][0], st, soft, w_viol, best)
     if best is None:
         return None
     _, rout, pl = best
     arr = np.vstack(pl)
-    dmax = 0.0
-    for fwd, (gx, gy, t0_), pieces in rout:
-        pass
-    return {"segments": rout, "poses": arr, "end_ok": True, "violation": 0.0, "evaluations": 0,
+    return {"segments": rout, "poses": arr, "end_ok": True, "violation": problem._violation(arr), "evaluations": 0,
             "max_delta": math.atan2(problem.L, problem.r_rear), "cost": best[0]}
+
+
+def edge_violations(problem: Problem, poses, margin_user: float, boundary) -> list[dict]:
+    """Boundary edges the car comes closer to than the margin (or crosses), with the affected part of each edge."""
+    poly = np.asarray(boundary, dtype=float)[:, :2]
+    a, b = poly, np.roll(poly, -1, axis=0)
+    ox, oy = problem.outline[:, 0], problem.outline[:, 1]
+    c, s = np.cos(poses[:, 2])[:, None], np.sin(poses[:, 2])[:, None]
+    X = (poses[:, 0][:, None] + c * ox[None, :] - s * oy[None, :]).ravel()
+    Y = (poses[:, 1][:, None] + s * ox[None, :] + c * oy[None, :]).ravel()
+    sdf = problem.fs.sample(X, Y)
+    bad = sdf < margin_user
+    if not bad.any():
+        return []
+    X, Y, sdf = X[bad], Y[bad], sdf[bad]
+    # nearest edge of every offending body point
+    best_d = np.full(X.shape, np.inf)
+    best_i = np.zeros(X.shape, dtype=int)
+    best_t = np.zeros(X.shape)
+    for i, ((ax, ay), (bx, by)) in enumerate(zip(a, b)):
+        vx, vy = bx - ax, by - ay
+        ll = vx * vx + vy * vy
+        t = np.clip(((X - ax) * vx + (Y - ay) * vy) / ll, 0.0, 1.0) if ll > 0 else np.zeros_like(X)
+        dd = np.hypot(X - (ax + t * vx), Y - (ay + t * vy))
+        better = dd < best_d
+        best_d[better], best_i[better], best_t[better] = dd[better], i, t[better]
+    out = []
+    for i in np.unique(best_i):
+        m = best_i == i
+        t0_, t1_ = float(best_t[m].min()), float(best_t[m].max())
+        ax, ay = a[i]
+        bx, by = b[i]
+        out.append({"edge_index": int(i),
+                    "edge": [[round(float(ax), 3), round(float(ay), 3)], [round(float(bx), 3), round(float(by), 3)]],
+                    "from": [round(float(ax + t0_ * (bx - ax)), 3), round(float(ay + t0_ * (by - ay)), 3)],
+                    "to": [round(float(ax + t1_ * (bx - ax)), 3), round(float(ay + t1_ * (by - ay)), 3)],
+                    "min_clearance": round(float(sdf[m].min()), 2),
+                    "intrusion": round(float(margin_user - sdf[m].min()), 2),
+                    "crosses_boundary": bool(sdf[m].min() < 0.0)})
+    out.sort(key=lambda v: -v["intrusion"])
+    return out
 
 
 def pieces_to_vertices(start_xy, tau, pieces):
@@ -356,7 +411,10 @@ def solve(boundary, start, goal, car: Car, kmax: float, margin: float, res: floa
     problem = Problem(boundary, start, goal, car, kmax, margin, res)
     ref_poses, ref_dirs = reference
     runs = waypoints_from_reference(ref_poses, ref_dirs, car.L, spacing=max(4 * res, 1.5 * car.L))
-    best = beam_search(problem, runs, time_budget_s)
+    t_start = time.monotonic()
+    best = beam_search(problem, runs, 0.5 * time_budget_s, soft=False)
+    if best is None:   # nothing keeps the margin: least-violating drivable route, violations reported
+        best = beam_search(problem, runs, max(5.0, time_budget_s - (time.monotonic() - t_start)), soft=True)
     if best is None:
         best = optimise(problem, [(f, [w[:2] for w in wps]) for f, wps in runs], time_budget_s)
     segments = []
@@ -376,11 +434,12 @@ def solve(boundary, start, goal, car: Car, kmax: float, margin: float, res: floa
             t_start = math.atan2(v[i + 2][1] - v[i + 1][1], v[i + 2][0] - v[i + 1][0]) - 2 * math.atan(v[i + 1][2])
             jumps.append(abs(math.degrees(wrap(t_start - t_end))))
     endp = arr[-1]
-    ok = best["end_ok"] and clr >= margin_user
+    violations = edge_violations(problem, arr, margin_user, boundary)
+    ok = best["end_ok"] and clr > -2.0 * car.L     # a "route" far outside the boundary is no answer
     return {"found": bool(ok), "success": bool(ok), "gear_changes": len(segments) - 1,
             "total_length": round(sum(s["length"] for s in segments), 2), "min_clearance": round(clr, 2),
             "clearance_ok": clr >= margin_user, "max_steer_deg": round(math.degrees(best["max_delta"]), 2),
             "path_tangent_jump_max_deg": round(max(jumps), 4) if jumps else 0.0,
             "end_error": {"distance": round(math.hypot(endp[0] - goal[0], endp[1] - goal[1]), 3),
                           "heading_deg": round(math.degrees(wrap(endp[2] - goal[2])), 3)},
-            "evaluations": best["evaluations"], "segments": segments}
+            "violations": violations, "evaluations": best["evaluations"], "segments": segments}
