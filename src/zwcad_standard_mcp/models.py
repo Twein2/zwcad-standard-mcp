@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import fnmatch
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
@@ -70,12 +71,33 @@ class FilteredPropertyPatch(BaseModel):
 
 
 class EntityQuerySpec(BaseModel):
+    """Entity query. Unknown keys are rejected (they used to be ignored silently, FINDINGS #49)."""
+
+    model_config = {"extra": "forbid"}
+
     scope: Scope = "model"
     entity_type: str | None = None
+    entity_types: list[str] | None = Field(default=None, description="Several entity types (any of them)")
     layer: str | None = None
+    layers: list[str] | None = Field(default=None, description="Several layers; * and ? wildcards, case-insensitive")
     text_contains: str | None = None
     block_name: str | None = None
     limit: int = Field(default=200, ge=1, le=100000)
+
+    def type_names(self) -> list[str]:
+        names = ([self.entity_type] if self.entity_type else []) + list(self.entity_types or [])
+        return [n.strip() for n in names if n and n.strip()]
+
+    def layer_patterns(self) -> list[str]:
+        names = ([self.layer] if self.layer else []) + list(self.layers or [])
+        return [n.strip().lower() for n in names if n and n.strip()]
+
+    def matches_layer(self, layer: str) -> bool:
+        patterns = self.layer_patterns()
+        if not patterns:
+            return True
+        name = (layer or "").lower()
+        return any(fnmatch.fnmatchcase(name, p) for p in patterns)
 
 
 class EntityPropertyPatch(BaseModel):
@@ -331,6 +353,7 @@ class SweptPathRequest(BaseModel):
     step_mm: float = Field(default=50.0, gt=0, le=1000)
     outline_interval_mm: float = Field(default=0.0, ge=0, description="Draw the car outline every N mm (0 = never)")
     auto_fillet: bool = Field(default=True, description="Round sharp LWPOLYLINE corners with the minimum radius first (new path on SP_SCIEZKA)")
+    show_layers: bool = Field(default=True, description="Switch on / thaw existing SP_* result layers that are off or frozen (reported in result.layers)")
     units: Literal["auto", "mm", "cm", "m"] = "auto"
     vehicle: VehicleOverrides = Field(default_factory=VehicleOverrides)
 
@@ -341,6 +364,7 @@ class RoundPathRequest(BaseModel):
     path_handle: str = Field(min_length=1)
     direction: Literal["forward", "reverse"] = "forward"
     radius_cm: float | None = Field(default=None, gt=0, description="Default: minimum radius for the direction")
+    show_layers: bool = Field(default=True, description="Switch on / thaw existing SP_* result layers that are off or frozen")
     units: Literal["auto", "mm", "cm", "m"] = "auto"
     vehicle: VehicleOverrides = Field(default_factory=VehicleOverrides)
 

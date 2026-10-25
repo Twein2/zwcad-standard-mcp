@@ -545,14 +545,38 @@
 )
 
 ;;; ---------------- tworzenie obiektow ----------------
-(defun mosp:layer (nm col)
+(setq mosp:*show* T mosp:*shown* nil mosp:*hidden* nil)
+
+;;; creates the layer if missing; an existing layer that is off or frozen is switched on and thawed
+;;; when mosp:*show* is T (otherwise only reported), so the result is never drawn invisibly (FINDINGS #52)
+(defun mosp:layer (nm col / d c f)
   (if (not (tblsearch "LAYER" nm))
     (entmake (list '(0 . "LAYER") '(100 . "AcDbSymbolTableRecord")
                    '(100 . "AcDbLayerTableRecord") (cons 2 nm) '(70 . 0)
                    (cons 62 col) '(6 . "Continuous")))
+    (progn
+      (setq d (entget (tblobjname "LAYER" nm))
+            c (cdr (assoc 62 d))
+            f (cdr (assoc 70 d)))
+      (if (or (< c 0) (= 1 (logand 1 f)))
+        (if mosp:*show*
+          (progn
+            (setq d (subst (cons 62 (abs c)) (assoc 62 d) d)
+                  d (subst (cons 70 (logand f (~ 1))) (assoc 70 d) d))
+            (entmod d)
+            (if (not (member nm mosp:*shown*)) (setq mosp:*shown* (cons nm mosp:*shown*))))
+          (if (not (member nm mosp:*hidden*)) (setq mosp:*hidden* (cons nm mosp:*hidden*)))))
+    )
   )
   nm
 )
+
+(defun mosp:layers-begin (opts)
+  (setq mosp:*show* (zwmcp:opt "show_layers" opts T) mosp:*shown* nil mosp:*hidden* nil))
+
+(defun mosp:layers-end ()
+  (if mosp:*shown* (vla-Regen (vla-get-ActiveDocument (vlax-get-acad-object)) acActiveViewport))
+  (list (cons "layers_switched_on" (reverse mosp:*shown*)) (cons "hidden_layers" (reverse mosp:*hidden*))))
 (defun mosp:pline (pts lay cl)
   (if (> (length pts) 1)
     (entmake
@@ -639,6 +663,7 @@
 (defun mosp:scale (un) (cond ((= un 2) 0.1) ((= un 3) 0.001) (T 1.0)))
 
 (defun mo:round-path (path-h opts / *MOSP:VEH* bk sc ent typ rcm fx)
+  (mosp:layers-begin opts)
   (setq *MOSP:VEH* (mosp:vehicle (zwmcp:opt "vehicle" opts nil))
         bk (= (zwmcp:opt "mode" opts "Przod") "Tyl")
         sc (mosp:scale (zwmcp:opt "units" opts 2))
@@ -657,7 +682,8 @@
         (cons "radius_cm" rcm)
         (cons "min_radius_cm" (mosp:rfil_cm bk))
         (cons "layer" "SP_SCIEZKA")
-        (cons "problem_layer" "SP_PRZEKROCZENIE"))
+        (cons "problem_layer" "SP_PRZEKROCZENIE")
+        (cons "layers" (mosp:layers-end)))
 )
 
 (defun mo:swept-path (path-h opts / *MOSP:VEH* ent typ bk un sc rev stp intv tot slist s sd
@@ -665,6 +691,7 @@
                         PF PFp PR ux tg tg0 tgN nl phi dd th a0 a1 dl dmaxf over prevover nover nextd hb
                         lPOSE lPF lTFL lTFR lTRL lTRR ext pth envq lENV rec k bidx rmax rminr lLeft lRight
                         ps q p npts GP tgw dlt thp sprev rfc fx r env tyres pos warn PFe PRe)
+  (mosp:layers-begin opts)
   (setq *MOSP:VEH* (mosp:vehicle (zwmcp:opt "vehicle" opts nil))
         bk (= (zwmcp:opt "mode" opts "Przod") "Tyl")
         ent (zwmcp:ent path-h)
@@ -744,6 +771,7 @@
         (cons "tyre_handles" tyres)
         (cons "end_position" (list (cons "front_axle" PFe) (cons "rear_axle" PRe)))
         (cons "position_handles" pos)
+        (cons "layers" (mosp:layers-end))
         (cons "warning" warn))
 )
 

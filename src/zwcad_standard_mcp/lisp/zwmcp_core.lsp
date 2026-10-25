@@ -170,41 +170,43 @@
   )
 )
 
-(defun zwmcp:run (dir id undo / req res tmp r doc body)
-  (setq req (strcat dir "req_" id ".lsp")
-        res (strcat dir "res_" id ".json")
-        tmp (strcat dir "res_" id ".tmp")
+;; Locals carry the zwmcp:% prefix on purpose: AutoLISP is dynamically scoped, so a top-level
+;; (setq res ...) in execute_lisp code used to overwrite the runner's result path (FINDINGS #50).
+(defun zwmcp:run (zwmcp:%dir zwmcp:%id zwmcp:%undo / zwmcp:%req zwmcp:%res zwmcp:%tmp zwmcp:%r zwmcp:%doc zwmcp:%body)
+  (setq zwmcp:%req (strcat zwmcp:%dir "req_" zwmcp:%id ".lsp")
+        zwmcp:%res (strcat zwmcp:%dir "res_" zwmcp:%id ".json")
+        zwmcp:%tmp (strcat zwmcp:%dir "res_" zwmcp:%id ".tmp")
         zwmcp:*last-error* nil)
   ;; acknowledge: tells the server that the request started (long tools keep running after it)
-  (zwmcp:write-file (strcat dir "ack_" id ".txt") "1")
-  (if undo
+  (zwmcp:write-file (strcat zwmcp:%dir "ack_" zwmcp:%id ".txt") "1")
+  (if zwmcp:%undo
     (progn
-      (setq doc (vla-get-ActiveDocument (vlax-get-acad-object)))
-      (vla-StartUndoMark doc)
+      (setq zwmcp:%doc (vla-get-ActiveDocument (vlax-get-acad-object)))
+      (vla-StartUndoMark zwmcp:%doc)
     )
   )
-  (setq r (vl-catch-all-apply 'zwmcp:eval-request (list req)))
-  (if doc (vla-EndUndoMark doc))
-  (setq body
-    (if (vl-catch-all-error-p r)
+  (setq zwmcp:%r (vl-catch-all-apply 'zwmcp:eval-request (list zwmcp:%req)))
+  (if zwmcp:%doc (vla-EndUndoMark zwmcp:%doc))
+  (setq zwmcp:%body
+    (if (vl-catch-all-error-p zwmcp:%r)
       (strcat "\"ok\":false,\"error\":"
-              (zwmcp:jstr (if zwmcp:*last-error* zwmcp:*last-error* (vl-catch-all-error-message r))))
+              (zwmcp:jstr (if zwmcp:*last-error* zwmcp:*last-error* (vl-catch-all-error-message zwmcp:%r))))
       (progn
-        (setq r (vl-catch-all-apply 'zwmcp:json (list r)))
-        (if (vl-catch-all-error-p r)
+        (setq zwmcp:%r (vl-catch-all-apply 'zwmcp:json (list zwmcp:%r)))
+        (if (vl-catch-all-error-p zwmcp:%r)
           (strcat "\"ok\":false,\"error\":"
-                  (zwmcp:jstr (strcat "Result serialization failed: " (vl-catch-all-error-message r))))
-          (strcat "\"ok\":true,\"value\":" r)
+                  (zwmcp:jstr (strcat "Result serialization failed: " (vl-catch-all-error-message zwmcp:%r))))
+          (strcat "\"ok\":true,\"value\":" zwmcp:%r)
         )
       )
     )
   )
-  (zwmcp:write-file tmp
-    (strcat "{\"id\":" (zwmcp:jstr id) ",\"unicode\":" (if zwmcp:*unicode* "true" "false") "," body "}"))
-  (vl-file-delete req)
-  (vl-file-delete (strcat dir "ack_" id ".txt"))
-  (vl-file-delete res)
-  (vl-file-rename tmp res)
+  (zwmcp:write-file zwmcp:%tmp
+    (strcat "{\"id\":" (zwmcp:jstr zwmcp:%id) ",\"unicode\":" (if zwmcp:*unicode* "true" "false") "," zwmcp:%body "}"))
+  (vl-file-delete zwmcp:%req)
+  (vl-file-delete (strcat zwmcp:%dir "ack_" zwmcp:%id ".txt"))
+  (vl-file-delete zwmcp:%res)
+  (vl-file-rename zwmcp:%tmp zwmcp:%res)
   (princ)
 )
 

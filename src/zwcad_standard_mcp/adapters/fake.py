@@ -226,9 +226,10 @@ class FakeCadAdapter(CadAdapter):
                 continue
             if query.scope == "paper" and entity.get("layout") == "Model":
                 continue
-            if query.entity_type and entity["entity_type"].lower() != query.entity_type.lower():
+            types = [t.lower() for t in query.type_names()]
+            if types and entity["entity_type"].lower() not in types:
                 continue
-            if query.layer and entity["layer"].lower() != query.layer.lower():
+            if not query.matches_layer(entity["layer"]):
                 continue
             if query.block_name and entity.get("block_name", "").lower() != query.block_name.lower():
                 continue

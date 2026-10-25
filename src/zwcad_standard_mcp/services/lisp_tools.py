@@ -216,7 +216,8 @@ class LispToolsMixin:
             return rejection
         self._ensure_write()
         opts.update({"reverse": request.against_drawing_direction, "step": request.step_mm,
-                     "interval": request.outline_interval_mm, "auto_fillet": request.auto_fillet})
+                     "interval": request.outline_interval_mm, "auto_fillet": request.auto_fillet,
+                     "show_layers": request.show_layers})
         value = self.adapter.lisp_call_expr(
             lisp_call("mo:swept-path", request.path_handle, opts, codepage=self.adapter.lisp_codepage()),
             undo=True, name="vehicle_swept_path")
@@ -234,6 +235,7 @@ class LispToolsMixin:
             return rejection
         self._ensure_write()
         opts["radius_cm"] = float(radius)
+        opts["show_layers"] = request.show_layers
         value = self.adapter.lisp_call_expr(
             lisp_call("mo:round-path", request.path_handle, opts, codepage=self.adapter.lisp_codepage()),
             undo=True, name="round_path_corners")

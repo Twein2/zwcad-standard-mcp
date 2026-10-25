@@ -329,6 +329,20 @@ class LispChannel:
                     self._remove(request_id)
             if not acknowledged:
                 acknowledged = self.ack_path(request_id).exists()
+                request_gone = not (self.ipc_dir / f"req_{request_id}.lsp").exists()
+                if not acknowledged and request_gone and not path.exists():
+                    # the runner deletes the request only after evaluating it: it ran, but wrote no result
+                    # (e.g. the code redefined a runner variable or the result file could not be renamed)
+                    grace = time.monotonic() + 1.0      # the runner renames the result right after the delete
+                    while not path.exists() and time.monotonic() < grace:
+                        time.sleep(self.poll_s)
+                    if not path.exists():
+                        self._remove(request_id)
+                        raise LispChannelError(
+                            f"The LISP request ran but wrote no result (request {request_id}). Check the ZWCAD "
+                            "command line for the error; code sent to execute_lisp should keep its variables "
+                            "local, e.g. ((lambda ( / a b) ...))."
+                        )
                 if not acknowledged and time.monotonic() - started > ack_timeout_s:
                     self._remove(request_id)
                     raise LispChannelError(

@@ -1185,9 +1185,10 @@ class ComCadAdapter(CadAdapter):
         target_text = query.text_contains.lower() if query.text_contains else None
         for layout_name, space in self._spaces(query.scope):
             for entity in self._iter_collection(space):
-                if not self._match_type(entity, query.entity_type):
+                types = query.type_names()
+                if types and not any(self._match_type(entity, t) for t in types):
                     continue
-                if query.layer and str(self._safe_get(entity, "Layer", "")).lower() != query.layer.lower():
+                if not query.matches_layer(str(self._safe_get(entity, "Layer", ""))):
                     continue
                 if target_block and (self._block_name(entity) or "").lower() != target_block:
                     continue
@@ -1321,10 +1322,16 @@ class ComCadAdapter(CadAdapter):
             )
         elif et == "lwpolyline":
             self._require(p, ("vertices",), et)
-            flattened = []
+            flattened, bulges = [], []
             for point in p["vertices"]:
                 flattened.extend([float(point[0]), float(point[1])])
+                bulges.append(float(point[2]) if len(point) > 2 and point[2] is not None else 0.0)
+            if "bulges" in p:                      # alternative: separate list, one value per vertex
+                bulges = [float(b) for b in p["bulges"]] + [0.0] * max(0, len(bulges) - len(p["bulges"]))
             entity = space.AddLightWeightPolyline(self._double_array(flattened))
+            for index, bulge in enumerate(bulges):
+                if bulge:
+                    entity.SetBulge(index, bulge)
             if "closed" in p:
                 entity.Closed = bool(p["closed"])
         elif et == "text":
