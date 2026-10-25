@@ -358,6 +358,35 @@ class SweptPathRequest(BaseModel):
     vehicle: VehicleOverrides = Field(default_factory=VehicleOverrides)
 
 
+class VehicleRouteRequest(BaseModel):
+    """Plan a collision-free route for a car inside a closed boundary, from a start vector to an end vector."""
+
+    model_config = {"extra": "forbid"}
+
+    boundary_handle: str = Field(min_length=1, description="Closed LWPOLYLINE the whole car (with mirrors) must stay inside")
+    start_handle: str = Field(min_length=1, description="Start vector: 2-point LWPOLYLINE or LINE, tail -> head = direction the car faces")
+    end_handle: str = Field(min_length=1, description="End vector, same convention")
+    anchor: Literal["centre", "rear_axle", "front_axle"] = Field(
+        default="centre", description="What the vector marks: 'centre' = its midpoint is the body centre; "
+                                      "'rear_axle' / 'front_axle' = its tail is that axle centre")
+    allow_reverse: bool = Field(default=True, description="false = forward driving only (answers quickly when impossible)")
+    max_gear_changes: int = Field(default=3, ge=0, le=8)
+    margin_mm: float = Field(default=100.0, ge=0, description="Minimum clearance between car and boundary")
+    time_budget_s: float = Field(default=120.0, gt=0, le=900, description="Total planning time; runs in the background")
+    wait_s: float = Field(default=45.0, ge=0, le=55, description="How long this call waits before returning a running plan_id")
+    units: Literal["auto", "mm", "cm", "m"] = "auto"
+    vehicle: VehicleOverrides = Field(default_factory=VehicleOverrides)
+
+
+class DrawVehicleRouteRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    plan_id: str = Field(min_length=1)
+    layer: str = Field(default="VEHICLE_ROUTE", min_length=1)
+    verify: bool = Field(default=True, description="Run vehicle_swept_path on every segment and check the envelopes against the boundary")
+    outline_interval_mm: float = Field(default=2000.0, ge=0, description="Car outline every N mm in the swept path (0 = none)")
+
+
 class RoundPathRequest(BaseModel):
     """Round the corners of a polyline route with the vehicle's minimum radius (port of SCIEZKA)."""
 

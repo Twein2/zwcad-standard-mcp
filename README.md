@@ -53,7 +53,7 @@ MCP Python SDK.
 | Fear of accidental changes or deletions | dry-run by default, per-call `confirm`, second confirmation for delete/save, undo marks |
 | ZWCAD dialogs block automation | `list_cad_dialogs`, `dismiss_cad_dialog`, dialog guard |
 
-## Tools (59)
+## Tools (62)
 
 **System**: `diagnose_cad`, `get_cad_app_info`, `audit_drawing`, `list_cad_dialogs`, `dismiss_cad_dialog`,
 `get_cad_job` (result of a call that was moved to the background because a dialog appeared)
@@ -105,6 +105,21 @@ uses LISP automatically for `group_by` layer/type
 - `vehicle_swept_path`: swept path of a car (body with mirrors and outer tyre faces) along a path driven
   forward or in reverse, with automatic rounding of sharp corners and a feasibility check (CAYENNE.LSP)
 - `round_path_corners`: round a straight-segment route with the vehicle's minimum radius (SCIEZKA)
+
+**Vehicle route planning** (needs numpy, installed by `install.bat`):
+- `plan_vehicle_route`: find a collision-free route for a car inside a closed boundary from a start vector to
+  an end vector (hybrid A* with an exact Dubins tail, whole body with mirrors kept `margin_mm` from the
+  boundary, gear changes allowed or `allow_reverse=false`). Read-only; runs in the background and returns a
+  `plan_id`. Forward-only requests that are geometrically impossible are answered within seconds.
+- `get_vehicle_route_plan`: poll a running plan.
+- `draw_vehicle_route`: draw one polyline with arcs per gear (forward = front axle path, reverse = rear axle
+  path) and verify it: `vehicle_swept_path` on every segment plus an intersection / clearance check of the
+  envelopes against the boundary.
+
+Typical request: *"in the open drawing find the boundary on layer X and the vectors on layers Y and Z, and draw
+the vehicle route from Y to Z without touching X"* → `select_entities` / `count_entities` for the handles,
+`plan_vehicle_route`, `draw_vehicle_route`, `get_screenshot`. `vehicle_swept_path` alone does not search for a
+route. Walkthrough and results: [`examples/vehicle_route`](examples/vehicle_route/README.md).
 
 ### Filtered selection
 

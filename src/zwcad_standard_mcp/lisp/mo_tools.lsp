@@ -906,3 +906,55 @@
   (setq pos (reverse (cons (entlast) pos)))
   T
 )
+
+;;; ---------------- vehicle route (plan_vehicle_route / draw_vehicle_route) ----------------
+;;; geometry of a LWPOLYLINE or LINE: type, layer, closed flag, vertices (x y bulge)
+(defun mo:curve-data (h / e d typ vs)
+  (setq e (zwmcp:ent h) d (entget e) typ (cdr (assoc 0 d)) vs nil)
+  (cond
+    ((= typ "LWPOLYLINE")
+     (foreach g d
+       (cond ((= (car g) 10) (setq vs (cons (list (cadr g) (caddr g) 0.0) vs)))
+             ((= (car g) 42) (setq vs (cons (list (car (car vs)) (cadr (car vs)) (cdr g)) (cdr vs))))))
+     (setq vs (reverse vs)))
+    ((= typ "LINE")
+     (setq vs (list (list (cadr (assoc 10 d)) (caddr (assoc 10 d)) 0.0)
+                    (list (cadr (assoc 11 d)) (caddr (assoc 11 d)) 0.0))))
+    (T (zwmcp:fail (strcat "Entity " h " is " typ "; use a LWPOLYLINE (boundary, vector) or a LINE (vector)."))))
+  (list (cons "handle" h) (cons "type" typ) (cons "layer" (cdr (assoc 8 d)))
+        (cons "closed" (if (and (= typ "LWPOLYLINE") (= 1 (logand 1 (cdr (assoc 70 d))))) T 'false))
+        (cons "vertices" vs)
+        (cons "insunits" (getvar "INSUNITS")))
+)
+
+;;; draws one LWPOLYLINE (with bulges) per segment; forward = green, reverse = red
+(defun mo:route-draw (lay segs / out vs gear)
+  (if (not (tblsearch "LAYER" lay))
+    (entmake (list '(0 . "LAYER") '(100 . "AcDbSymbolTableRecord") '(100 . "AcDbLayerTableRecord")
+                   (cons 2 lay) '(70 . 0) '(62 . 4) '(6 . "Continuous"))))
+  (foreach seg segs
+    (setq vs (cdr (assoc "vertices" seg)) gear (cdr (assoc "gear" seg)))
+    (entmake (append
+               (list '(0 . "LWPOLYLINE") '(100 . "AcDbEntity") (cons 8 lay) (cons 62 (if (= gear "reverse") 1 3))
+                     '(100 . "AcDbPolyline") (cons 90 (length vs)) '(70 . 0))
+               (apply 'append (mapcar '(lambda (v) (list (list 10 (car v) (cadr v)) (cons 42 (caddr v)))) vs))))
+    (setq out (cons (list (cons "gear" gear) (cons "handle" (cdr (assoc 5 (entget (entlast)))))) out)))
+  (reverse out)
+)
+
+;;; envelope polylines against the boundary: intersections and smallest vertex distance
+(defun mo:envelope-check (boundary-h env-hs / lim out env ip n e dmin p d)
+  (setq lim (vlax-ename->vla-object (zwmcp:ent boundary-h)))
+  (foreach h env-hs
+    (setq env (vlax-ename->vla-object (zwmcp:ent h))
+          ip  (vlax-variant-value (vla-IntersectWith env lim acExtendNone))
+          n   (if (> (vlax-safearray-get-u-bound ip 1) 0) (/ (1+ (vlax-safearray-get-u-bound ip 1)) 3) 0)
+          e   (zwmcp:ent h) dmin 1e99)
+    (foreach g (entget e)
+      (if (= (car g) 10)
+        (setq p (list (cadr g) (caddr g) 0.0)
+              d (distance p (vlax-curve-getClosestPointTo lim p))
+              dmin (min d dmin))))
+    (setq out (cons (list (cons "envelope_handle" h) (cons "intersections" n) (cons "min_distance" dmin)) out)))
+  (reverse out)
+)

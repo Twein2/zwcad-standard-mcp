@@ -4,9 +4,9 @@ This example shows how Claude combines the ZWCAD MCP tools with its own computat
 that no single tool covers: **find a collision-free route for a car from a start vector to an end
 vector inside a closed boundary, draw it, and prove it with the vehicle swept path**.
 
-The server does not plan routes. `vehicle_swept_path` only simulates a car along a path you give it.
-The planning happens outside ZWCAD (here in Python, `plan_route.py`). ZWCAD MCP is used to read the
-geometry, draw the result and verify it.
+**Since 2026-10-25 the server does this itself:** `plan_vehicle_route` → `draw_vehicle_route` (see
+[Using the tools](#using-the-tools)). The rest of this page documents the first run, done with the scripts in
+this folder before the tools existed; `plan_route.py` stays as a stand-alone reference implementation.
 
 ![Result in ZWCAD](zwcad_result.png)
 
@@ -14,6 +14,25 @@ geometry, draw the result and verify it.
 and car outlines every 2 m (white), front / rear axle end positions (green). The forward route runs up the
 lane on the right and turns left to the north; the car then reverses in an arc into the bay on the left.
 Zero intersections with the boundary, minimum clearance 10.7 cm.*
+
+## Using the tools
+
+```text
+count_entities / select_entities  {"layers": ["Cayenne limits", "Cayenne start", "Cayenne end"]}  -> handles
+plan_vehicle_route {"boundary_handle": "11679A", "start_handle": "11679D", "end_handle": "11679E"}
+    -> {"plan_id": "ROUTE001", "status": "running" | "done", "result": {...}}
+get_vehicle_route_plan {"plan_id": "ROUTE001"}            # only while status is "running"
+draw_vehicle_route {"plan_id": "ROUTE001"} dry_run=false confirm=true
+    -> paths, swept_path (feasible, steering), collision_check (intersections, min distance), verified
+get_screenshot
+```
+
+- Vector convention: tail → head is the direction the car faces; the midpoint is the body centre
+  (`anchor="centre"`, or `"rear_axle"` / `"front_axle"` = the tail is that axle).
+- `allow_reverse=false` checks forward-only driving. For this drawing the answer comes in 0.3 s: impossible,
+  because the end vector points out of a 3.8 m wide dead-end bay and the car cannot turn round inside it.
+- With reversing allowed the planner first finds any route (a few seconds), then searches again for fewer gear
+  changes within `time_budget_s` (default 120 s, in the background).
 
 ## The prompt
 

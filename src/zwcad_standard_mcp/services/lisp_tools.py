@@ -2,19 +2,24 @@
 
 from __future__ import annotations
 
+import itertools
 import math
 import os
+import threading
+import time
 from typing import Any
 
-from zwcad_standard_mcp import archtools
+from zwcad_standard_mcp import archtools, route_planner
 from zwcad_standard_mcp.adapters.lisp_channel import lisp_call, strip_lisp_comments
 from zwcad_standard_mcp.errors import LispDisabledError, ValidationError
 from zwcad_standard_mcp.models import (
     AreaFieldRequest,
+    DrawVehicleRouteRequest,
     OffsetRequest,
     RoundPathRequest,
     SunRulerRequest,
     SweptPathRequest,
+    VehicleRouteRequest,
 )
 from zwcad_standard_mcp.permissions.policy import PermissionLevel
 from zwcad_standard_mcp.permissions_bridge import require_permission
@@ -27,6 +32,24 @@ _CAYENNE_UNITS = {4: 1, 5: 2, 6: 3}
 def lisp_enabled() -> bool:
     """execute_lisp (arbitrary code) is opt-in: ZWCAD_MCP_ENABLE_LISP=1."""
     return os.getenv("ZWCAD_MCP_ENABLE_LISP", "0").strip().lower() in {"1", "true", "yes", "on"}
+
+
+_ROUTE_PLANS: dict[str, dict[str, Any]] = {}
+_ROUTE_LOCK = threading.Lock()
+_ROUTE_SEQ = itertools.count(1)
+_UNIT_NAME = {4: "mm", 5: "cm", 6: "m"}
+
+
+def _plan_view(plan: dict, include_segments: bool = True) -> dict:
+    view = {k: v for k, v in plan.items() if k not in ("thread", "geometry", "result")}
+    result = plan.get("result")
+    if result is not None:
+        view["result"] = result if include_segments else {k: v for k, v in result.items() if k != "segments"}
+    if plan["status"] == "running":
+        view["next_step"] = "call get_vehicle_route_plan(plan_id) until status is 'done'"
+    elif result and result.get("found"):
+        view["next_step"] = "call draw_vehicle_route(plan_id) to draw and verify the route"
+    return view
 
 
 def _drop_none(values: dict) -> dict:
@@ -196,6 +219,124 @@ class LispToolsMixin:
         if overrides:
             opts["vehicle"] = overrides
         return opts, veh, code
+
+    # ------------------------------------------------------------------ vehicle route planning
+
+    def _curve(self, handle: str) -> dict:
+        value = self.adapter.lisp_call_expr(lisp_call("mo:curve-data", handle, codepage=self.adapter.lisp_codepage()),
+                                            name="curve_data")
+        if not value or not value.get("vertices"):
+            raise ValidationError(f"Could not read the geometry of {handle}.")
+        return value
+
+    def plan_vehicle_route(self, request: VehicleRouteRequest) -> dict:
+        try:
+            route_planner.require_numpy()
+        except route_planner.PlanningError as exc:
+            raise ValidationError(str(exc)) from exc
+        overrides = {k: v for k, v in request.vehicle.model_dump().items() if v is not None}
+        try:
+            veh = archtools.vehicle(overrides)
+        except ValueError as exc:
+            raise ValidationError(str(exc)) from exc
+        boundary = self._curve(request.boundary_handle)
+        start = self._curve(request.start_handle)
+        end = self._curve(request.end_handle)
+        insunits = self._insunits(request.units) if request.units != "auto" else int(boundary.get("insunits") or 0)
+        units = _UNIT_NAME.get(insunits)
+        if units is None:
+            raise ValidationError(f"Drawing units are not set (INSUNITS={insunits}); pass units='mm', 'cm' or 'm'.")
+        if boundary.get("type") != "LWPOLYLINE" or boundary.get("closed") is not True:
+            raise ValidationError(f"The boundary {request.boundary_handle} must be a closed LWPOLYLINE.")
+        for name, vec in (("start", start), ("end", end)):
+            if len(vec["vertices"]) != 2:
+                raise ValidationError(f"The {name} vector must have exactly 2 points (it has {len(vec['vertices'])}).")
+        poly = route_planner.polyline_points(boundary["vertices"], True, max_seg=200.0 * {"mm": 1, "cm": 0.1, "m": 0.001}[units])
+        plan_id = f"ROUTE{next(_ROUTE_SEQ):03d}"
+        plan = {"plan_id": plan_id, "status": "running", "created": time.time(), "units": units,
+                "boundary_handle": request.boundary_handle, "start_handle": request.start_handle,
+                "end_handle": request.end_handle, "allow_reverse": request.allow_reverse,
+                "vehicle": veh.get("NAME"), "vehicle_overrides": overrides, "result": None,
+                "geometry": {"boundary": poly}}
+
+        def work() -> None:
+            try:
+                result = route_planner.plan_route(
+                    poly, [v[:2] for v in start["vertices"]], [v[:2] for v in end["vertices"]], veh, units,
+                    margin_mm=request.margin_mm, allow_reverse=request.allow_reverse,
+                    max_gear_changes=request.max_gear_changes, time_budget_s=request.time_budget_s,
+                    anchor=request.anchor)
+            except route_planner.PlanningError as exc:
+                result = {"success": False, "found": False, "reason": str(exc)}
+            except Exception as exc:  # report, never kill the server
+                result = {"success": False, "found": False, "reason": f"planner error: {exc}"}
+            with _ROUTE_LOCK:
+                plan["result"] = result
+                plan["status"] = "done"
+
+        thread = threading.Thread(target=work, name=plan_id, daemon=True)
+        plan["thread"] = thread
+        with _ROUTE_LOCK:
+            _ROUTE_PLANS[plan_id] = plan
+        thread.start()
+        thread.join(request.wait_s)
+        with _ROUTE_LOCK:
+            return {"success": True, **_plan_view(plan)}
+
+    def get_vehicle_route_plan(self, plan_id: str, wait_s: float = 45.0) -> dict:
+        with _ROUTE_LOCK:
+            plan = _ROUTE_PLANS.get(plan_id)
+        if plan is None:
+            raise ValidationError(f"Unknown plan_id {plan_id} (plans live only while the server runs).")
+        thread = plan.get("thread")
+        if thread is not None and plan["status"] == "running":
+            thread.join(max(0.0, min(float(wait_s), 55.0)))
+        with _ROUTE_LOCK:
+            return {"success": True, **_plan_view(plan)}
+
+    def draw_vehicle_route(self, request: DrawVehicleRouteRequest, dry_run: bool = True, confirm: bool = False) -> dict:
+        with _ROUTE_LOCK:
+            plan = _ROUTE_PLANS.get(request.plan_id)
+        if plan is None:
+            raise ValidationError(f"Unknown plan_id {request.plan_id} (plans live only while the server runs).")
+        result = plan.get("result")
+        if plan["status"] != "done" or not result or not result.get("found"):
+            raise ValidationError(f"Plan {request.plan_id} has no route to draw (status {plan['status']}).")
+        segments = result["segments"]
+        preview = {"layer": request.layer, "segments": [{"gear": s["gear"], "length": s["length"],
+                                                          "vertices": len(s["vertices"])} for s in segments],
+                   "verify": request.verify}
+        if dry_run:
+            return {"success": True, "dry_run": True, "preview": preview}
+        rejection = require_permission(PermissionLevel.MODIFY, confirm=confirm)
+        if rejection:
+            return rejection
+        self._ensure_write()
+        cp = self.adapter.lisp_codepage()
+        drawn = self.adapter.lisp_call_expr(
+            lisp_call("mo:route-draw", request.layer,
+                      [{"gear": s["gear"], "vertices": s["vertices"]} for s in segments], codepage=cp),
+            undo=True, name="draw_vehicle_route")
+        out: dict[str, Any] = {"success": True, "dry_run": False, "plan_id": request.plan_id, "paths": drawn}
+        if not request.verify:
+            return out
+        checks, envelopes = [], []
+        for seg, path in zip(segments, drawn or []):
+            opts, _, _ = self._vehicle_opts(seg["gear"], plan["units"], plan.get("vehicle_overrides") or {})
+            opts.update({"auto_fillet": False, "interval": request.outline_interval_mm, "show_layers": True})
+            value = self.adapter.lisp_call_expr(lisp_call("mo:swept-path", path["handle"], opts, codepage=cp),
+                                                undo=True, name="vehicle_swept_path")
+            checks.append({"gear": seg["gear"], "path_handle": path["handle"],
+                           "feasible": value.get("feasible"), "required_steer_deg": value.get("required_steer_deg"),
+                           "max_steer_deg": value.get("max_steer_deg"), "envelope_handle": value.get("envelope_handle"),
+                           "end_position": value.get("end_position"), "layers": value.get("layers")})
+            if value.get("envelope_handle"):
+                envelopes.append(value["envelope_handle"])
+        collision = self.adapter.lisp_call_expr(
+            lisp_call("mo:envelope-check", plan["boundary_handle"], envelopes, codepage=cp), name="envelope_check") or []
+        ok = all(c.get("feasible") is True for c in checks) and all(c.get("intersections") == 0 for c in collision)
+        out.update({"swept_path": checks, "collision_check": collision, "verified": ok})
+        return out
 
     def vehicle_swept_path(self, request: SweptPathRequest, dry_run: bool = True, confirm: bool = False) -> dict:
         opts, veh, code = self._vehicle_opts(request.direction, request.units, request.vehicle.model_dump())
