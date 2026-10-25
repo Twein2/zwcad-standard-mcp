@@ -72,9 +72,10 @@ def register_lisp_tools(mcp: Any, service: CadService) -> None:
 
     @mcp.tool()
     def draw_sun_ruler(request: SunRulerRequest, dry_run: bool = True, confirm: bool = False) -> dict:
-        """Equinox shadow ruler (linijka nasłonecznienia, LinijkaSlonca) at a building corner.
+        """Equinox sun ruler (linijka nasłonecznienia, LinijkaSlonca) at an evaluated point, e.g. a window.
 
-        Draws shadow lines every 30 min 7:00–17:00 for an obstruction of the given height, height lines 1–5 m,
+        Lines point towards the sun every 30 min 7:00–17:00; their length is the distance at which an obstruction
+        H = obstruction_height_m - terrain_height_m above the point just reaches the sun ray. Height lines 1–5 m,
         the exposure sector between two directions (or times) and groups it into a block; optional result
         description and room label. Layers a_naslonecznienie_*. dry_run=true returns the exposure window.
         """

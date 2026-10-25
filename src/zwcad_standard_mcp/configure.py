@@ -23,31 +23,40 @@ from pathlib import Path
 
 
 def candidate_config_paths() -> list[Path]:
+    """Claude Desktop config locations, Microsoft Store (MSIX) copies first.
+
+    The Store version reads its virtualised copy (Packages\\Claude_*\\LocalCache\\Roaming\\Claude) and ignores
+    %APPDATA%\\Claude when that copy exists (FINDINGS #43).
+    """
     paths: list[Path] = []
-    appdata = os.environ.get("APPDATA")
-    if appdata:
-        paths.append(Path(appdata) / "Claude" / "claude_desktop_config.json")
     local = os.environ.get("LOCALAPPDATA")
     if local:
-        # Microsoft Store (MSIX) installs keep a virtualised copy of %APPDATA%.
         packages = Path(local) / "Packages"
         if packages.is_dir():
             for package in sorted(packages.glob("Claude_*")):
                 paths.append(package / "LocalCache" / "Roaming" / "Claude" / "claude_desktop_config.json")
+    appdata = os.environ.get("APPDATA")
+    if appdata:
+        paths.append(Path(appdata) / "Claude" / "claude_desktop_config.json")
     return paths
 
 
-def find_config_path() -> Path:
+def find_config_paths() -> list[Path]:
+    """Every existing config file (all are updated); else the first location whose folder exists."""
     candidates = candidate_config_paths()
-    for path in candidates:
-        if path.is_file():
-            return path
+    existing = [path for path in candidates if path.is_file()]
+    if existing:
+        return existing
     for path in candidates:
         if path.parent.is_dir():
-            return path
+            return [path]
     if not candidates:
         raise SystemExit("APPDATA is not set; pass --config with the path to claude_desktop_config.json.")
-    return candidates[0]
+    return [candidates[0]]
+
+
+def find_config_path() -> Path:
+    return find_config_paths()[0]
 
 
 def build_entry(python_exe: Path, confirm_mode: str, enable_lisp: bool, previous_env: dict | None = None) -> dict:
@@ -77,7 +86,16 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     python_exe = Path(sys.executable).absolute()
-    config_path = args.config or find_config_path()
+    paths = [args.config] if args.config else find_config_paths()
+    status = 0
+    for config_path in paths:
+        status |= configure_file(config_path, args, python_exe)
+    if status == 0 and not args.dry_run:
+        print("Restart Claude Desktop (quit it from the system tray, then start it again).")
+    return status
+
+
+def configure_file(config_path: Path, args: argparse.Namespace, python_exe: Path) -> int:
     config: dict = {}
     if config_path.is_file():
         text = config_path.read_text(encoding="utf-8-sig").strip()
@@ -112,7 +130,6 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Python:      {python_exe}")
     print(f"Confirm:     {confirm_mode}")
     print(f"execute_lisp: {'on' if enable_lisp else 'off'}")
-    print("Restart Claude Desktop (quit it from the system tray, then start it again).")
     return 0
 
 

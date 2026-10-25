@@ -282,10 +282,11 @@ class AreaFieldRequest(BaseModel):
 class SunRulerRequest(BaseModel):
     """Equinox shadow ruler for the 'czas nasłonecznienia' check (port of LinijkaSlonca)."""
 
-    base_point: Point2D = Field(min_length=2, max_length=3, description="Shadow-casting corner (WCS)")
+    base_point: Point2D = Field(min_length=2, max_length=3,
+                                description="Evaluated point, e.g. a window (WCS); the lines point towards the sun")
     equinox: Literal["spring", "autumn"] = Field(default="spring", description="spring = 21 March, autumn = 23 September")
-    obstruction_height_m: float = Field(default=15.0, gt=0, description="Height of the obstruction (real height, m)")
-    terrain_height_m: float = Field(default=0.0, description="Height of the evaluated point above terrain (e.g. window sill), m")
+    obstruction_height_m: float = Field(default=15.0, gt=0, description="Real height of the obstructing building, m")
+    terrain_height_m: float = Field(default=0.0, description="Height of the evaluated point above terrain (e.g. window), m; H = obstruction - this")
     latitude: float = Field(default=51.0, ge=-66, le=66)
     longitude: float = Field(default=17.0, ge=-180, le=180)
     start_direction_point: Point2D | None = Field(default=None, description="Point giving the shadow direction where exposure starts")
