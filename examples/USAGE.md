@@ -99,3 +99,9 @@ Execute after confirmation, then verify with `get_block_attributes`.
 
 If ZWCAD shows a dialog during plotting, the result lists it under `dialogs`; `list_cad_dialogs` shows dialogs
 that are still open.
+
+## 6. Plan a car route and check it with a swept path
+
+Read a boundary and two vectors, plan a collision-free route with gear changes outside ZWCAD,
+draw one polyline per gear and verify each with `vehicle_swept_path`. Full walkthrough, scripts and
+results: [`vehicle_route/README.md`](vehicle_route/README.md).

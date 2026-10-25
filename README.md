@@ -355,6 +355,10 @@ Update title block attributes:
 
 More examples are in `examples/USAGE.md`.
 
+Worked example of a multi-tool task: [plan a collision-free car route inside a boundary and verify it with
+`vehicle_swept_path`](examples/vehicle_route/README.md) (read geometry, plan in Python, draw, swept path,
+collision proof).
+
 ## Tests
 
 The repository includes a fake adapter that needs neither Windows nor ZWCAD:
