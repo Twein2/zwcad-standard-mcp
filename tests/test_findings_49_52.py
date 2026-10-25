@@ -113,3 +113,20 @@ def test_swept_path_shows_layers_by_default() -> None:
 
 def test_bundle_files_still_listed() -> None:
     assert set(BUNDLE_FILES) == {"zwmcp_core.lsp", "mo_tools.lsp"}
+
+
+# #55 -------------------------------------------------------------------------------------------
+
+class _Ent:
+    def __init__(self, object_name: str) -> None:
+        self.ObjectName = object_name
+
+
+def test_type_filter_maps_acdbpolyline_and_dxf_names() -> None:
+    adapter = object.__new__(ComCadAdapter)
+    adapter._safe_get = lambda obj, name, default=None: getattr(obj, name, default)  # type: ignore[method-assign]
+    poly, hatch, ins = _Ent("AcDbPolyline"), _Ent("AcDbHatch"), _Ent("AcDbBlockReference")
+    assert adapter._entity_type(poly) == "lwpolyline"
+    assert adapter._match_type(poly, "LWPOLYLINE") and adapter._match_type(poly, "lwpolyline")
+    assert adapter._match_type(hatch, "HATCH") and not adapter._match_type(hatch, "LWPOLYLINE")
+    assert adapter._match_type(ins, "INSERT") and adapter._match_type(ins, "block_reference")

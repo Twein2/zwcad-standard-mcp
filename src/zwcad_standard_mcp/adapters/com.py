@@ -42,7 +42,7 @@ _OBJECT_ALIASES = {
     "line": {"acdbline", "line"},
     "circle": {"acdbcircle", "circle"},
     "arc": {"acdbarc", "arc"},
-    "lwpolyline": {"acdpolyline", "acdblwpolyline", "lwpolyline", "polyline"},
+    "lwpolyline": {"acdbpolyline", "acdblwpolyline", "lwpolyline"},
     "polyline": {"acdb2dpolyline", "acdb3dpolyline", "polyline"},
     "text": {"acdbtext", "text"},
     "mtext": {"acdbmtext", "mtext"},
@@ -317,8 +317,9 @@ class ComCadAdapter(CadAdapter):
         expected_lower = expected.lower().strip()
         if expected_lower in _OBJECT_ALIASES:
             return actual == expected_lower
-        object_name = str(self._safe_get(entity, "ObjectName", "")).lower()
-        return expected_lower in {actual, object_name}
+        object_name = str(self._safe_get(entity, "ObjectName", ""))
+        # also accept the DXF name (LWPOLYLINE, INSERT, HATCH ...), as count_entities / select_entities do
+        return expected_lower in {actual, object_name.lower(), dxf_name(object_name).lower()}
 
     def _read_attributes(self, block_ref: Any) -> list[dict]:
         try:
