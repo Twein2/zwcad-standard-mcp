@@ -38,6 +38,8 @@ from zwcad_standard_mcp.models import (
 )
 from zwcad_standard_mcp.adapters.selection import _wild
 from zwcad_standard_mcp import textops
+from zwcad_standard_mcp.services.lisp_tools import LispToolsMixin, lisp_enabled
+from zwcad_standard_mcp.settings_file import settings_report
 from zwcad_standard_mcp.permissions.policy import PermissionLevel
 from zwcad_standard_mcp.permissions_bridge import confirm_mode, require_permission
 
@@ -151,7 +153,7 @@ def _execute_batch_job(
     _update_job(job_id, status=status, finished=len(files), failed=failed_count, results=results, completed_at=_utc_now())
 
 
-class CadService:
+class CadService(LispToolsMixin):
     """User-scenario-oriented operations with safe defaults and structured previews."""
 
     def __init__(self, adapter: CadAdapter, settings: Settings) -> None:
@@ -189,11 +191,28 @@ class CadService:
             "write_requires_confirm": confirm_mode() == "strict",
             "delete_requires_second_confirm": confirm_mode() == "strict",
             "save_requires_path_and_confirm": confirm_mode() == "strict",
-            "how_to_change": "Set ZWCAD_MCP_CONFIRM_MODE=off (or strict) in the MCP server env and restart the client.",
+            "how_to_change": "configure --confirm-mode off|strict (writes %USERPROFILE%\\zwcad-mcp\\settings.json), then restart the client.",
             "adapter": self.settings.adapter,
             "max_batch_size": self.settings.max_batch_size,
             "max_query_results": self.settings.max_query_results,
+            "execute_lisp_enabled": lisp_enabled(),
+            "settings_file": settings_report(),
+            "lisp_counts": getattr(self.adapter, "use_lisp_counts", False),
         }
+        if result.get("connected"):
+            try:
+                envelope = self.adapter.run_lisp("(zwmcp:ping)", name="lisp_status", timeout_s=30.0)
+                check = {"name": "lisp_channel", "ok": bool(envelope.get("ok")), **(self.adapter.lisp_info() or {})}
+                if envelope.get("ok"):
+                    value = envelope.get("value") or {}
+                    check["unicode_lisp"] = value.get("unicode")
+                    check["secureload"] = value.get("secureload")
+                else:
+                    check["error"] = envelope.get("error")
+            except Exception as exc:  # noqa: BLE001 - diagnose reports, never fails
+                check = {"name": "lisp_channel", "ok": False, "error": str(exc),
+                         "code": getattr(exc, "code", "UNEXPECTED_ERROR")}
+            result.setdefault("checks", []).append(check)
         return result
 
     def get_app_info(self) -> dict:
@@ -1289,3 +1308,4 @@ class CadService:
         self._ensure_write()
         results = self.adapter.insert_blocks(blocks)
         return {"success": True, "dry_run": False, **self._summary(results)}
+

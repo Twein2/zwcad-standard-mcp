@@ -68,6 +68,15 @@ class FakeCadAdapter(CadAdapter):
             {"name": "A3_TITLE_BLOCK", "entity_count": 12, "is_layout": False, "is_xref": False},
         ]
         self.undo_depth = 0
+        # Tests set this to a callable(expression, undo) -> envelope dict to simulate the LISP channel.
+        self.lisp_handler = None
+        self.lisp_calls: list[tuple[str, bool]] = []
+
+    def run_lisp(self, expression: str, undo: bool = False, timeout_s: float = 600.0, name: str = "lisp") -> dict:
+        self.lisp_calls.append((expression, undo))
+        if self.lisp_handler is None:
+            return super().run_lisp(expression, undo, timeout_s, name)
+        return self.lisp_handler(expression, undo)
 
     def _entity(self, handle: str) -> dict[str, Any]:
         try:

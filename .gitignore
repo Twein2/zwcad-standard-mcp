@@ -13,3 +13,6 @@ build/
 
 # Original v1 backup (pre-integration reference; not part of the published package)
 src/zwcad_standard_mcp_bak/
+
+# Local server settings (see settings_file.py)
+zwcad-mcp.settings.json

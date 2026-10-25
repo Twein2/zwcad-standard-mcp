@@ -41,6 +41,9 @@ def create_server(settings: Settings | None = None) -> FastMCP:
 
 
 def main() -> None:
+    from zwcad_standard_mcp.settings_file import apply_settings_file
+
+    file_report = apply_settings_file()
     settings = Settings.from_env()
     logging.basicConfig(
         stream=sys.stderr,
@@ -50,6 +53,8 @@ def main() -> None:
     from zwcad_standard_mcp.permissions_bridge import confirm_mode
 
     mode = confirm_mode()
+    if file_report.get("path"):
+        logging.getLogger("zwcad_standard_mcp").info("Settings file: %s %s", file_report["path"], file_report.get("applied"))
     logging.getLogger("zwcad_standard_mcp").info(
         "Confirmation mode: %s%s", mode,
         " (set ZWCAD_MCP_CONFIRM_MODE=off to run writes, deletes and saves without confirm flags)"
