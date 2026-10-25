@@ -130,7 +130,7 @@ def test_new_tools_are_registered() -> None:
 
     service, _ = _service()
     register_all_tools(StubMCP(), service)
-    for name in ("get_screenshot", "lisp_status", "execute_lisp", "offset_entities", "insert_area_fields",
+    for name in ("get_screenshot", "zoom_view", "lisp_status", "execute_lisp", "offset_entities", "insert_area_fields",
                  "draw_sun_ruler", "vehicle_swept_path", "round_path_corners"):
         assert name in names
     assert len(names) == len(set(names))

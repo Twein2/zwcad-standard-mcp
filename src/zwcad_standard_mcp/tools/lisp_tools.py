@@ -32,6 +32,13 @@ def register_lisp_tools(mcp: Any, service: CadService) -> None:
         return [Image(data=result["png"], format="png"), json.dumps(meta)]
 
     @mcp.tool()
+    def zoom_view(mode: str = "extents", lower_left: list[float] | None = None, upper_right: list[float] | None = None,
+                  handles: list[str] | None = None, margin: float = 0.05) -> dict:
+        """Change the view of the active drawing: mode 'extents', 'window' (lower_left/upper_right) or 'entities'
+        (bounding box of handles plus margin as a fraction). Use before get_screenshot."""
+        return invoke(service.zoom_view, mode, lower_left, upper_right, handles, margin)
+
+    @mcp.tool()
     def lisp_status() -> dict:
         """Check the AutoLISP channel (loads the bundled LISP library into the active drawing if needed)."""
         return invoke(service.lisp_status)

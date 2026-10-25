@@ -2171,6 +2171,36 @@ class ComCadAdapter(CadAdapter):
             raise CadConnectionError("ZWCAD window handle is unknown.")
         return capture_window(self._main_hwnd, region=region, max_width=max_width)
 
+    def zoom_view(self, mode: str, lower_left: list[float] | None, upper_right: list[float] | None,
+                  handles: list[str] | None, margin: float) -> dict:
+        app = self._connect()
+        doc = self._doc()
+        if mode == "extents":
+            app.ZoomExtents()
+        else:
+            if mode == "entities":
+                bounds = []
+                for handle in handles or []:
+                    try:
+                        box = self._try_get_bounding_box(doc.HandleToObject(handle))
+                    except Exception:
+                        box = None
+                    if box:
+                        bounds.append(box)
+                if not bounds:
+                    raise ValidationError("None of the handles has a bounding box.")
+                merged = self._merge_bounds(bounds)
+                lower_left, upper_right = merged["min"], merged["max"]
+            if not lower_left or not upper_right:
+                raise ValidationError("window mode needs lower_left and upper_right.")
+            dx = (upper_right[0] - lower_left[0]) * margin
+            dy = (upper_right[1] - lower_left[1]) * margin
+            app.ZoomWindow(
+                self._point([lower_left[0] - dx, lower_left[1] - dy, 0.0]),
+                self._point([upper_right[0] + dx, upper_right[1] + dy, 0.0]),
+            )
+        return {"success": True, "mode": mode, "view": self.get_current_view()}
+
     def offset_entities(self, handles: list[str], distance: float, both_sides: bool, layer: str | None) -> list[dict]:
         doc = self._doc()
         results: list[dict] = []

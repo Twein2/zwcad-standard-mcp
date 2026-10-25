@@ -82,6 +82,13 @@ class LispToolsMixin:
             raise ValidationError("region must be 'drawing' or 'window'.")
         return self.adapter.screenshot(region=region, max_width=max(320, min(int(max_width), 2560)))
 
+    def zoom_view(self, mode: str = "extents", lower_left: list[float] | None = None,
+                  upper_right: list[float] | None = None, handles: list[str] | None = None,
+                  margin: float = 0.05) -> dict:
+        if mode not in {"extents", "window", "entities"}:
+            raise ValidationError("mode must be 'extents', 'window' or 'entities'.")
+        return self.adapter.zoom_view(mode, lower_left, upper_right, handles, max(0.0, margin))
+
     def offset_entities(self, request: OffsetRequest, dry_run: bool = True, confirm: bool = False) -> dict:
         self._limit(request.handles, "handles")
         if request.layer:

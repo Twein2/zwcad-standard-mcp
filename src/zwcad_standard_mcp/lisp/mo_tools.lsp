@@ -664,7 +664,7 @@
                         vL vFO vRO vW vWM vMX vMD vTRF vTRR vTW vTD vTC vSS rr dmax rfmin rmin
                         PF PFp PR ux tg tg0 tgN nl phi dd th a0 a1 dl dmaxf over prevover nover nextd hb
                         lPOSE lPF lTFL lTFR lTRL lTRR ext pth envq lENV rec k bidx rmax rminr lLeft lRight
-                        ps q p npts GP tgw dlt thp sprev rfc fx r env tyres pos warn)
+                        ps q p npts GP tgw dlt thp sprev rfc fx r env tyres pos warn PFe PRe)
   (setq *MOSP:VEH* (mosp:vehicle (zwmcp:opt "vehicle" opts nil))
         bk (= (zwmcp:opt "mode" opts "Przod") "Tyl")
         ent (zwmcp:ent path-h)
@@ -742,7 +742,7 @@
         (cons "overshoot_places" nover)
         (cons "envelope_handle" env)
         (cons "tyre_handles" tyres)
-        (cons "end_position" (list (cons "front_axle" PF) (cons "rear_axle" PR)))
+        (cons "end_position" (list (cons "front_axle" PFe) (cons "rear_axle" PRe)))
         (cons "position_handles" pos)
         (cons "warning" warn))
 )
@@ -822,6 +822,9 @@
     (while (and (> intv 0.0) (>= s nextd)) (setq nextd (+ nextd intv)))
     (setq prevover over)
   )
+  ;; end pose: kept apart because the envelope loop below reuses PF / ux / nl
+  ;; (CAYENNE.LSP v2.2 drew SP_POZYCJA with the front axle of the FIRST pose)
+  (setq PFe PF PRe PR)
 
   ;; envelope of the body with mirrors: helper path extended at both ends, project all body points
   (setq ext (+ vL vRO vFO vW (* 2000.0 sc))
@@ -867,11 +870,11 @@
   (setq tyres (reverse tyres))
 
   (mosp:layer "SP_POZYCJA" 3)
-  (mosp:line PR PF "SP_POZYCJA")
+  (mosp:line PRe PFe "SP_POZYCJA")
   (setq pos (list (entlast)))
-  (mosp:circle PF (* 150.0 sc) "SP_POZYCJA")
+  (mosp:circle PFe (* 150.0 sc) "SP_POZYCJA")
   (setq pos (cons (entlast) pos))
-  (mosp:circle PR (* 150.0 sc) "SP_POZYCJA")
+  (mosp:circle PRe (* 150.0 sc) "SP_POZYCJA")
   (setq pos (reverse (cons (entlast) pos)))
   T
 )

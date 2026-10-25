@@ -243,6 +243,10 @@ class CadAdapter(ABC):
     def screenshot(self, region: str = "drawing", max_width: int = 1280) -> dict:
         raise UnsupportedOperationError("Screenshots are not available with this adapter.")
 
+    def zoom_view(self, mode: str, lower_left: list[float] | None, upper_right: list[float] | None,
+                  handles: list[str] | None, margin: float) -> dict:
+        raise UnsupportedOperationError("Zoom is not available with this adapter.")
+
     def offset_entities(self, handles: list[str], distance: float, both_sides: bool, layer: str | None) -> list[dict]:
         raise UnsupportedOperationError("Offset is not available with this adapter.")
 
