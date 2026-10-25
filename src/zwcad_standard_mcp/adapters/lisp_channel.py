@@ -44,8 +44,9 @@ def default_ipc_dir() -> Path:
     override = os.getenv("ZWCAD_MCP_IPC_DIR")
     if override:
         return Path(override)
-    base = os.getenv("LOCALAPPDATA") or os.path.join(os.path.expanduser("~"), ".local", "share")
-    return Path(base) / "zwcad-mcp" / "ipc"
+    # Not under %LOCALAPPDATA%: Claude Desktop from the Microsoft Store (MSIX) virtualises AppData for the
+    # server process, so ZWCAD would not see files written there (FINDINGS #41).
+    return Path(os.path.expanduser("~")) / "zwcad-mcp" / "ipc"
 
 
 def ansi_codepage() -> str:
