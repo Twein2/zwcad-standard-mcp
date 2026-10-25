@@ -216,6 +216,10 @@
   (if (not (setq e (handent handle)))
     (zwmcp:fail (strcat "Entity not found: " handle))
   )
+  ;; handent still returns the ename of an erased entity; entget is nil then
+  (if (not (entget e))
+    (zwmcp:fail (strcat "Entity " handle " was deleted from the drawing (select it again)."))
+  )
   e
 )
 

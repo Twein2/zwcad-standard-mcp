@@ -791,19 +791,19 @@ def plan_route(boundary, start_vec, end_vec, vehicle: dict, units: str = "cm", *
     corridor_margin = margin_mm
     try:
         ref = route_rigid.plan_route(boundary, start_vec, end_vec, vehicle, units, max_gear_changes=max_gear_changes,
-                                     time_budget_s=min(60.0, 0.4 * time_budget_s), margin_mm=margin_mm,
+                                     time_budget_s=0.45 * time_budget_s, margin_mm=margin_mm,
                                      allow_reverse=allow_reverse, anchor=anchor)
     except route_rigid.PlanningError:
         # the start or end pose itself is closer than the margin: find the corridor without margin and report
         # the violated edges from the drivable route
         corridor_margin = 0.0
         ref = route_rigid.plan_route(boundary, start_vec, end_vec, vehicle, units, max_gear_changes=max_gear_changes,
-                                     time_budget_s=min(60.0, 0.4 * time_budget_s), margin_mm=0.0,
+                                     time_budget_s=0.45 * time_budget_s, margin_mm=0.0,
                                      allow_reverse=allow_reverse, anchor=anchor)
     if not ref.get("found") and corridor_margin > 0:
         # no corridor with the margin: try without it, the violated edges are reported
         ref2 = route_rigid.plan_route(boundary, start_vec, end_vec, vehicle, units, max_gear_changes=max_gear_changes,
-                                      time_budget_s=min(40.0, 0.25 * time_budget_s), margin_mm=0.0,
+                                      time_budget_s=0.35 * time_budget_s, margin_mm=0.0,
                                       allow_reverse=allow_reverse, anchor=anchor)
         if ref2.get("found"):
             ref, corridor_margin = ref2, 0.0
