@@ -10,10 +10,10 @@ geometry, draw the result and verify it.
 
 ![Result in ZWCAD](zwcad_result.png)
 
-*Result in ZWCAD Standard 2024: boundary (yellow), forward path (green), reverse path (red),
-swept envelopes with mirrors (red outlines), tyre tracks and car outlines every 2 m (white).
-The long diagonal green line with circles is left over from an older run of the original
-CAYENNE.LSP in the same drawing (its known end-pose bug, fixed in the port) and is not part of this example.*
+*Result in ZWCAD Standard 2024: boundary (yellow), swept envelopes with mirrors (red), tyre tracks
+and car outlines every 2 m (white), front / rear axle end positions (green). The forward route runs up the
+lane on the right and turns left to the north; the car then reverses in an arc into the bay on the left.
+Zero intersections with the boundary, minimum clearance 10.7 cm.*
 
 ## The prompt
 
@@ -45,7 +45,7 @@ Conventions used by the example (stated in the answer, adjustable in `plan_route
 | 7 | Swept path, forward part | `vehicle_swept_path` `direction=forward`, `auto_fillet=false`, `units=cm` | path = front axle centre |
 | 8 | Swept path, reverse part | `vehicle_swept_path` `direction=reverse`, `auto_fillet=false`, `units=cm` | path = rear axle centre |
 | 9 | Prove no collision | `execute_lisp`: `IntersectWith` envelope × boundary, min. distance | must be 0 intersections |
-| 10 | Look at it | `zoom_view`, `get_screenshot` | layers `SP_*` may be off in your drawing |
+| 10 | Look at it | `zoom_view`, `get_screenshot` | `SP_*` layers that were off are switched on (`result.layers`) |
 
 Read step (3), wrapped in a `lambda` with local variables (see *Pitfalls*):
 
@@ -126,19 +126,21 @@ Needs numpy, scipy and matplotlib. Runtime on this example: about 5 minutes (pur
 
 ![Planner preview](route_example.png)
 
-## Pitfalls found on the way
+## Pitfalls found on the way (fixed in the server, FINDINGS #49-#52)
 
-- **Do not overwrite the LISP runner's variables.** AutoLISP uses dynamic scope; code sent to
-  `execute_lisp` that does `(setq res ...)` at top level overwrites a local of `zwmcp:run` and the
-  result is lost (the server then reports "did not start within 10 s"). Wrap code in
-  `((lambda ( / your locals) ...))`.
-- **`query_entities` uses `layer` (one name), not `layers`.** Unknown keys are silently ignored and
-  the query returns the first 200 entities of the drawing. Prefer `count_entities` / `select_entities`
-  (`layers` list with wildcards) or LISP `ssget`.
-- **`create_entities_batch` writes LWPOLYLINE vertices without bulges**, so arcs become chords; use
-  `entmake` (as `to_lisp.py` does) for paths with arcs.
-- **`vehicle_swept_path` does not switch on existing `SP_*` layers.** If the drawing already has them
-  turned off, the envelope is drawn but not visible.
+- **#50 LISP runner variables.** AutoLISP is dynamically scoped; `execute_lisp` code that did
+  `(setq res ...)` at top level overwrote a local of `zwmcp:run`, the result was lost and the server
+  reported a misleading "did not start within 10 s". The runner's locals are now prefixed
+  (`zwmcp:%res` ...), and a request that ran without writing a result is reported as such. Keeping your
+  own variables local, `((lambda ( / a b) ...))`, is still good practice.
+- **#49 `query_entities` ignored unknown keys** (`layers`, `entity_types`) and returned the first 200
+  entities of the drawing. Unknown keys are now rejected, and `layers` (wildcards) and `entity_types`
+  lists are supported.
+- **#51 `create_entities_batch` drew LWPOLYLINE arcs as chords.** Vertices now accept `[x, y, bulge]`
+  (or a `bulges` list). `to_lisp.py` uses `entmake`, which works with older server versions too.
+- **#52 `vehicle_swept_path` drew on `SP_*` layers that were off**, so nothing was visible. Existing result
+  layers that are off or frozen are now switched on (`show_layers=true`, default) and listed in
+  `result.layers`.
 - **`auto_fillet=false`** for planned paths: they have no sharp corners, and rounding would change them.
 - **Hybrid A* binning**: one primitive must turn the car by at least one heading bin, otherwise curved
   successors are pruned as duplicates of the straight one and the search never turns.
