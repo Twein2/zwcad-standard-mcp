@@ -660,6 +660,23 @@ def _plan_once(boundary, start_vec, end_vec, vehicle: dict, units: str = "cm", *
     arr = np.array(replay)
     min_clear = float(clearance_many(arr[:, 0], arr[:, 1], arr[:, 2]).min())
     endp = replay[-1]
+    # QuickTurn check (FINDINGS #57): when driving forward the front-axle path must be tangent-continuous,
+    # otherwise the steered wheels would have to jump (up to lock-to-lock) at a standstill-free point.
+    kinks = []
+    for sgm in segments:
+        if sgm["gear"] != "forward":
+            continue
+        v = sgm["vertices"]
+        for i in range(len(v) - 2):
+            t_end = math.atan2(v[i + 1][1] - v[i][1], v[i + 1][0] - v[i][0]) + 2 * math.atan(v[i][2])
+            t_start = math.atan2(v[i + 2][1] - v[i + 1][1], v[i + 2][0] - v[i + 1][0]) - 2 * math.atan(v[i + 1][2])
+            kinks.append(abs(math.degrees(wrap(t_start - t_end))))
+    if kinks and max(kinks) > 1.0:
+        return {**base, "success": False, "found": False, "exhausted": False, "timed_out": False,
+                "forward_path_kink_max_deg": round(max(kinks), 2),
+                "reason": ("the route found needs instantaneous steering changes while driving forward (front-axle "
+                           f"path kinks up to {max(kinks):.1f} deg), which a real car cannot do; it is not returned. "
+                           "The planner is being reworked to the QuickTurn model (FINDINGS #57).")}
     result = {**base, "success": True, "found": True, "gear_changes": len(segments) - 1,
             "total_length": round(sum(s["length"] for s in segments), 2),
             "min_clearance": round(min_clear, 2),

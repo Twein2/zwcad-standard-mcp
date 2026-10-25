@@ -26,7 +26,8 @@ Safety rules:
 - Prefer querying or reading selected objects before modifying them.
 - Vehicle routes: to find and draw a car route from a start vector to an end vector inside a boundary, use
   plan_vehicle_route (then get_vehicle_route_plan while it runs) and draw_vehicle_route. Do not write your own
-  planner and do not call vehicle_swept_path on the vectors: it only checks a path you already have.
+  planner and do not call vehicle_swept_path on the vectors: it only checks a path you already have. If the
+  plan is refused (steering would jump), report that to the user instead of drawing a route by other means.
 - Code sent to execute_lisp should keep its variables local: ((lambda ( / a b) ...)).
 """.strip()
 

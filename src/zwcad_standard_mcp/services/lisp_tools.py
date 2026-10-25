@@ -329,12 +329,16 @@ class LispToolsMixin:
             checks.append({"gear": seg["gear"], "path_handle": path["handle"],
                            "feasible": value.get("feasible"), "required_steer_deg": value.get("required_steer_deg"),
                            "max_steer_deg": value.get("max_steer_deg"), "envelope_handle": value.get("envelope_handle"),
+                           "steering_continuous": value.get("steering_continuous"),
+                           "max_steer_change_per_step_deg": value.get("max_steer_change_per_step_deg"),
                            "end_position": value.get("end_position"), "layers": value.get("layers")})
             if value.get("envelope_handle"):
                 envelopes.append(value["envelope_handle"])
         collision = self.adapter.lisp_call_expr(
             lisp_call("mo:envelope-check", plan["boundary_handle"], envelopes, codepage=cp), name="envelope_check") or []
-        ok = all(c.get("feasible") is True for c in checks) and all(c.get("intersections") == 0 for c in collision)
+        ok = (all(c.get("feasible") is True for c in checks)
+              and all(c.get("steering_continuous") is True for c in checks if c["gear"] == "forward")
+              and all(c.get("intersections") == 0 for c in collision))
         out.update({"swept_path": checks, "collision_check": collision, "verified": ok})
         return out
 

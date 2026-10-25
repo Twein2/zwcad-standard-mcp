@@ -8,7 +8,7 @@ from pathlib import Path
 from zwcad_standard_mcp import archtools, route_planner
 from zwcad_standard_mcp.adapters.fake import FakeCadAdapter
 from zwcad_standard_mcp.config import Settings
-from zwcad_standard_mcp.models import DrawVehicleRouteRequest, VehicleRouteRequest
+from zwcad_standard_mcp.models import VehicleRouteRequest
 from zwcad_standard_mcp.services import CadService
 from zwcad_standard_mcp.tools.register import register_all_tools
 
@@ -18,13 +18,11 @@ START = [[300, 300], [300, 800]]          # car facing north in the lane
 END = [[-1000, 2100], [-1500, 2100]]      # car facing west in the upper lane
 
 
-def test_forward_route_in_l_yard() -> None:
+def test_kinked_forward_route_is_refused() -> None:
+    # FINDINGS #57: the rigid-model planner produces front-axle kinks (instant steering); they must not be returned
     r = route_planner.plan_route(YARD, START, END, archtools.vehicle(), "cm", allow_reverse=False, time_budget_s=60)
-    assert r["found"], r
-    assert r["gear_changes"] == 0 and r["segments"][0]["gear"] == "forward"
-    assert r["clearance_ok"] and r["end_error"]["distance"] < 1.0 and abs(r["end_error"]["heading_deg"]) < 0.5
-    v = r["segments"][0]["vertices"]
-    assert all(len(p) == 3 for p in v) and any(abs(p[2]) > 0 for p in v)     # arcs as bulges
+    assert not r["found"]
+    assert r.get("forward_path_kink_max_deg", 0) > 1.0 and "steering" in r["reason"]
 
 
 def test_forward_only_dead_end_is_rejected_fast() -> None:
@@ -64,9 +62,8 @@ def test_service_plan_and_draw_dry_run() -> None:
                                                          wait_s=55, time_budget_s=60))
     if res["status"] == "running":
         res = service.get_vehicle_route_plan(res["plan_id"], 55)
-    assert res["status"] == "done" and res["result"]["found"], res
-    draw = service.draw_vehicle_route(DrawVehicleRouteRequest(plan_id=res["plan_id"]), dry_run=True)
-    assert draw["dry_run"] and draw["preview"]["segments"]
+    assert res["status"] == "done" and res["result"]["found"] is False   # refused until the QuickTurn rework
+    assert "steering" in res["result"]["reason"]
 
 
 def test_route_tools_registered() -> None:

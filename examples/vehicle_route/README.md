@@ -4,6 +4,15 @@ This example shows how Claude combines the ZWCAD MCP tools with its own computat
 that no single tool covers: **find a collision-free route for a car from a start vector to an end
 vector inside a closed boundary, draw it, and prove it with the vehicle swept path**.
 
+> **Correction (2026-10-25, FINDINGS #57).** The forward part of the routes on this page is **not drivable**:
+> the front-axle path has tangent breaks of 31.6° and 63.2°, i.e. the steered wheels would have to jump from
+> lock to lock while moving. The planner used a rigid-arc model of the rear axle; QuickTurn / CAYENNE guide the
+> FRONT axle along a tangent-continuous path (straights + arcs with R ≥ wheelbase / sin(lock), as SCIEZKA's
+> fillets and QuickTurn2's dynamic path do) and move the car by the tractrix. `vehicle_swept_path` reported
+> "feasible" because it only checked the size of the steering angle, not its continuity; it now reports
+> `steering_continuous` / `max_steer_change_per_step_deg`, and `plan_vehicle_route` refuses kinked routes until
+> the QuickTurn-consistent planner (branch `wip/quickturn-route`) is finished.
+
 **Since 2026-10-25 the server does this itself:** `plan_vehicle_route` → `draw_vehicle_route` (see
 [Using the tools](#using-the-tools)). The rest of this page documents the first run, done with the scripts in
 this folder before the tools existed; `plan_route.py` stays as a stand-alone reference implementation.

@@ -690,7 +690,7 @@
                         vL vFO vRO vW vWM vMX vMD vTRF vTRR vTW vTD vTC vSS rr dmax rfmin rmin
                         PF PFp PR ux tg tg0 tgN nl phi dd th a0 a1 dl dmaxf over prevover nover nextd hb
                         lPOSE lPF lTFL lTFR lTRL lTRR ext pth envq lENV rec k bidx rmax rminr lLeft lRight
-                        ps q p npts GP tgw dlt thp sprev rfc fx r env tyres pos warn PFe PRe)
+                        ps q p npts GP tgw dlt thp sprev rfc fx r env tyres pos warn PFe PRe sdl psdl djmax)
   (mosp:layers-begin opts)
   (setq *MOSP:VEH* (mosp:vehicle (zwmcp:opt "vehicle" opts nil))
         bk (= (zwmcp:opt "mode" opts "Przod") "Tyl")
@@ -763,6 +763,8 @@
                          nil))
         (cons "max_steer_deg" (mosp:deg dmax))
         (cons "required_steer_deg" (mosp:deg dmaxf))
+        (cons "max_steer_change_per_step_deg" (mosp:deg djmax))
+        (cons "steering_continuous" (if (< (mosp:deg djmax) 3.0) T 'false))
         (cons "min_path_radius_mm" (/ rmin sc))
         (cons "fillet_radius_min_cm" (mosp:ceil (/ rmin sc 10.0)))
         (cons "feasible" (if (> nover 0) 'false T))
@@ -782,7 +784,7 @@
     (setq slist (cons (* k stp) slist) k (1+ k)))
   (setq slist (reverse (cons tot slist)))
 
-  (setq phi nil PFp nil thp nil sprev nil nextd 0.0 dmaxf 0.0 nover 0 prevover nil)
+  (setq phi nil PFp nil thp nil sprev nil nextd 0.0 dmaxf 0.0 nover 0 prevover nil psdl nil djmax 0.0)
   (foreach s slist
     (setq sd (if rev (- tot s) s)
           GP (mosp:pt ent sd)
@@ -801,6 +803,7 @@
             PF  (mosp:add PR (mosp:mul ux vL))
             tgw (list (cos (+ phi dlt)) (sin (+ phi dlt)))
             dl  (abs dlt)
+            sdl dlt
             thp th
             sprev s)
       ;; forward: front axle centre follows the path, rear axle on the exact tractrix step
@@ -825,10 +828,15 @@
               PR  (mosp:sub PF (mosp:mul ux vL))
               PFp GP
               tgw tg
-              dl  (abs (mosp:dang (angle '(0.0 0.0) tg) phi)))
+              dl  (abs (mosp:dang (angle '(0.0 0.0) tg) phi))
+              sdl (mosp:dang (angle '(0.0 0.0) tg) phi))
       )
     )
     (setq nl (mosp:left ux) tgN tg)
+    ;; steering change between calculation steps: a jump means the path has a kink (forward) or a curvature
+    ;; jump (reverse) - the wheels would have to turn instantly (FINDINGS #57)
+    (if psdl (setq djmax (max djmax (abs (- sdl psdl)))))
+    (setq psdl sdl)
     (setq dmaxf (max dmaxf dl)
           over  (> dl (+ dmax 1e-4)))
     (setq lPOSE (cons (list PF ux) lPOSE))
