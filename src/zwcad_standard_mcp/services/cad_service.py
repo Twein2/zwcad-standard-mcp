@@ -26,6 +26,7 @@ from zwcad_standard_mcp.models import (
     EntityQuerySpec,
     LayerMapRequest,
     AreaTakeoffRequest,
+    BoundaryDistanceRequest,
     DimStyleSpec,
     HatchRequest,
     TextStyleSpec,
@@ -818,6 +819,86 @@ class CadService:
         result["expected_area"] = expected
         return result
 
+    _UNIT_TO_M = {4: 0.001, 5: 0.01, 6: 1.0}
+
+    def dimension_to_boundaries(self, request: BoundaryDistanceRequest, dry_run: bool = True, confirm: bool = False) -> dict:
+        from zwcad_standard_mcp import geometry
+
+        building = self.adapter.polyline_points(request.building_handle)
+        plot = self.adapter.polyline_points(request.plot_handle)
+        for label, shape in (("building", building), ("plot", plot)):
+            if not shape["closed"] or len(shape["points"]) < 3:
+                raise ValidationError(f"The {label} outline must be a closed polyline with at least 3 vertices.")
+        insunits = self._UNIT_NAMES[request.units] if request.units != "auto" else self.adapter.drawing_units()
+        to_m = self._UNIT_TO_M.get(insunits)
+        if to_m is None:
+            raise ValidationError(f"Drawing units unknown (INSUNITS={insunits}); pass units='mm'|'cm'|'m'.")
+        b_pts = [tuple(p) for p in building["points"]]
+        p_pts = [tuple(p) for p in plot["points"]]
+        outside = [list(p) for p in b_pts if not geometry.point_in_polygon(p, p_pts)]
+
+        rows = []
+        for item in geometry.distances_to_boundaries(b_pts, p_pts):
+            distance_m = round(item["distance"] * to_m, 3)
+            if request.report_within_m is not None and distance_m > request.report_within_m:
+                continue
+            required = request.boundary_min_m.get(item["boundary_index"], request.min_distance_m)
+            row = {
+                "boundary_index": item["boundary_index"],
+                "boundary_length_m": round(item["boundary_length"] * to_m, 2),
+                "distance_m": distance_m,
+                "building_point": item["building_point"],
+                "boundary_point": item["boundary_point"],
+            }
+            if required is not None:
+                row.update({"required_m": required, "ok": distance_m + 1e-6 >= required})
+            rows.append(row)
+        rows.sort(key=lambda r: r["distance_m"])
+        result: dict[str, Any] = {
+            "success": True,
+            "units": {4: "mm", 5: "cm", 6: "m"}[insunits],
+            "building_inside_plot": not outside,
+            "vertices_outside_plot": outside[:10],
+            "boundaries": rows,
+            "closest_m": rows[0]["distance_m"] if rows else None,
+        }
+        checked = [r for r in rows if "ok" in r]
+        if checked:
+            result["all_ok"] = all(r["ok"] for r in checked)
+            result["violations"] = [r["boundary_index"] for r in checked if not r["ok"]]
+        if not request.create_dimensions:
+            return result
+
+        specs = [
+            EntityCreateSpec(
+                entity_type="dimension_aligned",
+                params={
+                    "point1": r["building_point"],
+                    "point2": r["boundary_point"],
+                    "text_point": [
+                        (r["building_point"][0] + r["boundary_point"][0]) / 2,
+                        (r["building_point"][1] + r["boundary_point"][1]) / 2,
+                    ],
+                },
+                layer=request.layer or "0",
+            )
+            for r in rows
+            if r["distance_m"] > 0
+        ]
+        if dry_run:
+            return {**result, "dry_run": True, "dimensions_to_create": len(specs)}
+        if request.layer:
+            existing = {item["name"].lower() for item in self.adapter.list_layers(detail=False)}
+            if request.layer.lower() not in existing:
+                raise ValidationError(f"Layer does not exist: {request.layer} (create it with ensure_layers).")
+        rejection = require_permission(PermissionLevel.MODIFY, confirm=confirm)
+        if rejection:
+            return rejection
+        self._ensure_write()
+        created = self.adapter.create_entities(specs)
+        return {**result, "dry_run": False, "dimensions": [c.get("handle") for c in created if c.get("success")],
+                "dimension_failures": [c for c in created if not c.get("success")]}
+
     def area_takeoff(self, request: AreaTakeoffRequest) -> dict:
         groups: dict[str, list[str]] = {
             "plot": [request.plot_handle],
@@ -884,6 +965,9 @@ class CadService:
             "count": len(dialogs),
             "dialogs": [{"title": d.get("title"), "buttons": d.get("buttons")} for d in dialogs],
         }
+
+    def get_cad_job(self, job_id: str) -> dict:
+        return self.adapter.job_status(job_id)
 
     def dismiss_cad_dialog(self, title_contains: str, button: str, confirm: bool = False) -> dict:
         rejection = require_permission(PermissionLevel.MODIFY, confirm=confirm)

@@ -29,6 +29,12 @@ def register_system_tools(mcp: Any, service: CadService) -> None:
         return invoke(service.list_cad_dialogs)
 
     @mcp.tool()
+    def get_cad_job(job_id: str) -> dict:
+        """Status or result of a call that returned MODAL_DIALOG_OPEN / STILL_RUNNING with a job_id
+        (e.g. open_document waiting on a dialog). Answer the dialog first with dismiss_cad_dialog."""
+        return invoke(service.get_cad_job, job_id)
+
+    @mcp.tool()
     def dismiss_cad_dialog(title_contains: str, button: str, confirm: bool = False) -> dict:
         """Press a button (by caption) in an open ZWCAD dialog whose title contains `title_contains`. Requires confirm=true."""
         return invoke(service.dismiss_cad_dialog, title_contains, button, confirm)

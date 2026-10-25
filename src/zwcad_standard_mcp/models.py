@@ -230,6 +230,21 @@ class AreaLimits(BaseModel):
     max_intensity: float | None = None
 
 
+class BoundaryDistanceRequest(BaseModel):
+    """Distances from a building outline to every plot boundary segment (WT §12 checks)."""
+
+    building_handle: str = Field(min_length=1)
+    plot_handle: str = Field(min_length=1)
+    min_distance_m: float | None = Field(default=None, ge=0, description="Required minimum, e.g. 4.0 (wall with windows)")
+    boundary_min_m: dict[int, float] = Field(
+        default_factory=dict, description="Per boundary index overrides, e.g. {2: 3.0} for a wall without windows"
+    )
+    report_within_m: float | None = Field(default=None, gt=0, description="Only report boundaries closer than this")
+    create_dimensions: bool = False
+    layer: str | None = Field(default=None, description="Layer for created dimensions (must exist)")
+    units: Literal["auto", "mm", "cm", "m"] = "auto"
+
+
 class AreaTakeoffRequest(BaseModel):
     """Site balance (bilans terenu) from closed outlines; areas are assumed not to overlap."""
 
