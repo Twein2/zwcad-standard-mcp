@@ -11,7 +11,9 @@ from pathlib import Path
 from typing import Any, Iterable, Iterator
 
 from zwcad_standard_mcp.errors import (
+    CadBusyError,
     CadConnectionError,
+    LispChannelError,
     EntityNotFoundError,
     ModalDialogError,
     NoActiveDocumentError,
@@ -31,6 +33,7 @@ from zwcad_standard_mcp.models import (
 
 from .base import CadAdapter
 from .detached import DetachedRunner
+from .lisp_channel import LispChannel, lisp_string
 from .dialogs import DialogWatchdog, click_dialog_button, find_process_dialogs, safe_answer_for
 from .selection import COMMON_DXF_TYPES, _wild, build_filter, dxf_name, escape_layer_name
 
@@ -79,6 +82,9 @@ class ComCadAdapter(CadAdapter):
         self._app: Any | None = None
         self._pythoncom: Any | None = None
         self._win32_client: Any | None = None
+        self._lisp_channel: LispChannel | None = None
+        self._lisp_count_error: str | None = None
+        self.use_lisp_counts = os.getenv("ZWCAD_MCP_LISP_COUNTS", "1").strip().lower() not in {"0", "false", "off", "no"}
         self._runner = DetachedRunner(
             find_dialogs=lambda: find_process_dialogs(self._main_hwnd) if self._main_hwnd else [],
             is_safe_dialog=lambda d: self.auto_dismiss_dialogs and safe_answer_for(d) is not None,
@@ -508,10 +514,43 @@ class ComCadAdapter(CadAdapter):
     def _layer_names(self, doc: Any) -> list[str]:
         return [str(self._safe_get(layer, "Name", "")) for layer in self._iter_collection(doc.Layers)]
 
+    def _lisp_filter(self, flt: EntityFilter) -> str:
+        codes, values = build_filter(flt)
+        pairs = []
+        for code, value in zip(codes, values):
+            literal = str(int(value)) if isinstance(value, int) else lisp_string(str(value), self._lisp().codepage)
+            pairs.append(f"(cons {int(code)} {literal})")
+        return "(list " + " ".join(pairs) + ")" if pairs else "nil"
+
+    def _count_lisp(self, flt: EntityFilter, groups: set[str]) -> dict:
+        """One ssget per grouping inside ZWCAD (FINDINGS #29, map_layers planning 16-26 s via COM)."""
+        started = time.monotonic()
+        result: dict[str, Any] = {"engine": "lisp"}
+        expr_filter = self._lisp_filter(flt)
+        for name, code in (("layer", 8), ("type", 0)):
+            if name not in groups:
+                continue
+            value = self.lisp_call_expr(f"(zwmcp:count-by {code} {expr_filter})", name="count_entities")
+            result["count"] = int(value.get("total") or 0)
+            grouped = value.get("groups") or {}
+            result["by_" + name] = dict(sorted(((str(k), int(v)) for k, v in grouped.items()), key=lambda kv: -kv[1]))
+        result["elapsed_s"] = round(time.monotonic() - started, 3)
+        return result
+
     def count_entities(self, flt: EntityFilter, group_by: list[str] | None = None) -> dict:
+        groups = set(group_by or [])
+        lisp_note = None
+        if groups & {"layer", "type"} and self.use_lisp_counts and not self._lisp_count_error:
+            try:
+                return self._count_lisp(flt, groups)
+            except LispChannelError as exc:
+                # Do not retry LISP on every call; COM selections below give the same numbers, slower.
+                self._lisp_count_error = lisp_note = str(exc)
         doc = self._doc()
         started = time.monotonic()
-        result: dict[str, Any] = {}
+        result: dict[str, Any] = {"engine": "com"}
+        if lisp_note or self._lisp_count_error:
+            result["lisp_fallback_reason"] = lisp_note or self._lisp_count_error
         with self._selection(doc) as selection:
             result["count"] = self._select(selection, flt)
             groups = set(group_by or [])
@@ -2066,6 +2105,94 @@ class ComCadAdapter(CadAdapter):
                     )
                 except Exception as exc:
                     results.append({"success": False, "index": index, "error": str(exc)})
+        return results
+
+    # ------------------------------------------------------------------ LISP channel
+
+    def _lisp(self) -> LispChannel:
+        if self._lisp_channel is None:
+            self._lisp_channel = LispChannel()
+        return self._lisp_channel
+
+    def run_lisp(self, expression: str, undo: bool = False, timeout_s: float = 600.0, name: str = "lisp") -> dict:
+        """Evaluate one LISP expression in the active document; returns the channel envelope.
+
+        Runs detached (worker thread with its own COM apartment), so a long LISP routine or a dialog it
+        opens returns STILL_RUNNING / MODAL_DIALOG_OPEN with a job id instead of blocking the server.
+        """
+        doc = self._doc()
+        try:
+            cmdactive = int(doc.GetVariable("CMDACTIVE"))
+        except Exception:
+            cmdactive = 0
+        if cmdactive:
+            raise CadBusyError(
+                f"ZWCAD is in the middle of a command (CMDACTIVE={cmdactive}). Finish it or press Esc in ZWCAD, then retry."
+            )
+        pending = find_process_dialogs(self._main_hwnd)
+        if pending:
+            titles = ", ".join(repr(d.get("title")) for d in pending)
+            raise ModalDialogError(f"ZWCAD shows a modal dialog: {titles}", pending)
+        channel = self._lisp()
+        pythoncom, win32_client, prog_id = self._pythoncom, self._win32_client, self.prog_id
+
+        def work() -> dict:
+            pythoncom.CoInitialize()
+            try:
+                app = win32_client.GetActiveObject(prog_id)
+                active = app.ActiveDocument
+                return channel.run(active.SendCommand, expression, undo=undo, timeout_s=timeout_s)
+            finally:
+                pythoncom.CoUninitialize()
+
+        return self._runner.run(name, work)
+
+    def lisp_call_expr(self, expression: str, undo: bool = False, name: str = "lisp", timeout_s: float = 600.0) -> Any:
+        envelope = self.run_lisp(expression, undo=undo, timeout_s=timeout_s, name=name)
+        if not envelope.get("ok"):
+            raise LispChannelError(f"LISP error: {envelope.get('error')}")
+        return envelope.get("value")
+
+    def lisp_codepage(self) -> str:
+        return self._lisp().codepage
+
+    def lisp_info(self) -> dict:
+        channel = self._lisp()
+        return {"ipc_dir": str(channel.ipc_dir), "codepage": channel.codepage, "unicode_lisp": channel.last_unicode}
+
+    # ------------------------------------------------------------------ screenshot / offset
+
+    def screenshot(self, region: str = "drawing", max_width: int = 1280) -> dict:
+        from .screenshot import capture_window
+
+        if self._main_hwnd is None:
+            self._connect()
+        if self._main_hwnd is None:
+            raise CadConnectionError("ZWCAD window handle is unknown.")
+        return capture_window(self._main_hwnd, region=region, max_width=max_width)
+
+    def offset_entities(self, handles: list[str], distance: float, both_sides: bool, layer: str | None) -> list[dict]:
+        doc = self._doc()
+        results: list[dict] = []
+        distances = [distance, -distance] if both_sides else [distance]
+        with self._undo_group():
+            for handle in handles:
+                try:
+                    obj = doc.HandleToObject(handle)
+                except Exception as exc:
+                    results.append({"handle": handle, "success": False, "error": f"not found: {exc}"})
+                    continue
+                for dist in distances:
+                    try:
+                        created = obj.Offset(dist)
+                        new_handles = []
+                        for item in created if isinstance(created, (list, tuple)) else [created]:
+                            if layer:
+                                item.Layer = layer
+                            new_handles.append(str(item.Handle))
+                        results.append({"handle": handle, "distance": dist, "success": True, "new_handles": new_handles})
+                    except Exception as exc:
+                        results.append({"handle": handle, "distance": dist, "success": False, "error": str(exc)})
         return results
 
     def begin_undo(self) -> None:

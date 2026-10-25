@@ -99,3 +99,13 @@ class JobDetachedError(ZWCADMCPError):
             }
         )
         return data
+
+
+class LispChannelError(ZWCADMCPError):
+    """The AutoLISP channel failed (no result, LISP error, encoding)."""
+
+    code = "LISP_ERROR"
+
+
+class LispDisabledError(ZWCADMCPError):
+    code = "LISP_DISABLED"

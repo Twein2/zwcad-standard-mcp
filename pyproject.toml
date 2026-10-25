@@ -28,6 +28,9 @@ zwcad-standard-mcp = "zwcad_standard_mcp.server:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+zwcad_standard_mcp = ["lisp/*.lsp"]
+
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 addopts = "-q"

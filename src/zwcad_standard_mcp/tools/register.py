@@ -12,6 +12,7 @@ from .entity_tools import register_entity_tools
 from .file_management_tools import register_file_management_tools
 from .layer_tools import register_layer_tools
 from .layout_tools import register_layout_tools
+from .lisp_tools import register_lisp_tools
 from .system_tools import register_system_tools
 
 
@@ -25,3 +26,4 @@ def register_all_tools(mcp: Any, service: CadService) -> None:
     register_layout_tools(mcp, service)
     register_block_tools(mcp, service)
     register_annotation_tools(mcp, service)
+    register_lisp_tools(mcp, service)

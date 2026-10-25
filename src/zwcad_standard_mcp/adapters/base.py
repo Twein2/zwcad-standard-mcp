@@ -3,6 +3,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Any, Iterable
 
+from zwcad_standard_mcp.errors import UnsupportedOperationError
 from zwcad_standard_mcp.models import (
     DimStyleSpec,
     HatchRequest,
@@ -218,6 +219,32 @@ class CadAdapter(ABC):
     def drawing_units(self) -> int:
         """INSUNITS value (4 = mm, 5 = cm, 6 = m, 0 = unitless)."""
         raise NotImplementedError
+
+    # --- AutoLISP channel, screenshot, offset ----------------------------------------
+
+    def run_lisp(self, expression: str, undo: bool = False, timeout_s: float = 600.0, name: str = "lisp") -> dict:
+        """Evaluate one LISP expression in the active document; ``{"ok", "value" | "error"}``."""
+        raise UnsupportedOperationError("The LISP channel is not available with this adapter.")
+
+    def lisp_call_expr(self, expression: str, undo: bool = False, name: str = "lisp", timeout_s: float = 600.0) -> Any:
+        envelope = self.run_lisp(expression, undo=undo, timeout_s=timeout_s, name=name)
+        if not envelope.get("ok"):
+            from zwcad_standard_mcp.errors import LispChannelError
+
+            raise LispChannelError(f"LISP error: {envelope.get('error')}")
+        return envelope.get("value")
+
+    def lisp_codepage(self) -> str:
+        return "utf-8"
+
+    def lisp_info(self) -> dict:
+        return {}
+
+    def screenshot(self, region: str = "drawing", max_width: int = 1280) -> dict:
+        raise UnsupportedOperationError("Screenshots are not available with this adapter.")
+
+    def offset_entities(self, handles: list[str], distance: float, both_sides: bool, layer: str | None) -> list[dict]:
+        raise UnsupportedOperationError("Offset is not available with this adapter.")
 
     # --- Modal dialog handling ------------------------------------------------------
 

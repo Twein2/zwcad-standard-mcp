@@ -255,3 +255,97 @@ class AreaTakeoffRequest(BaseModel):
     gross_floor_area_m2: float | None = Field(default=None, ge=0, description="For building intensity (MPZP 'intensywność')")
     units: Literal["auto", "mm", "cm", "m"] = "auto"
     limits: AreaLimits = Field(default_factory=AreaLimits)
+
+
+# --- LISP channel tools -------------------------------------------------------------------
+
+Point2D = list[float]
+
+
+class AreaFieldPair(BaseModel):
+    text_handle: str = Field(min_length=1, description="MTEXT (or TEXT) that receives the area")
+    source_handle: str = Field(min_length=1, description="Closed polyline, hatch, circle, region, ellipse or spline")
+
+
+class AreaFieldRequest(BaseModel):
+    """Live area fields in room / zone labels (port of the WklejPole / WklejPoleHatch LISP routines)."""
+
+    pairs: list[AreaFieldPair] = Field(min_length=1)
+    decimals: int = Field(default=1, ge=0, le=8)
+    decimal_separator: Literal[".", ","] | None = Field(default=None, description="None keeps ZWCAD's default")
+    with_layer: bool = Field(default=False, description="'<layer> - <area>' like WklejPoleHatch")
+    keep_text: bool = Field(default=True, description="Keep the label text in front of the old area value")
+    units: Literal["auto", "mm", "cm", "m"] = Field(default="auto", description="Drawing units; auto = INSUNITS")
+    suffix: str | None = Field(default=None, description="Text after the field; default superscript m² in MTEXT")
+
+
+class SunRulerRequest(BaseModel):
+    """Equinox shadow ruler for the 'czas nasłonecznienia' check (port of LinijkaSlonca)."""
+
+    base_point: Point2D = Field(min_length=2, max_length=3, description="Shadow-casting corner (WCS)")
+    equinox: Literal["spring", "autumn"] = Field(default="spring", description="spring = 21 March, autumn = 23 September")
+    obstruction_height_m: float = Field(default=15.0, gt=0, description="Height of the obstruction (real height, m)")
+    terrain_height_m: float = Field(default=0.0, description="Height of the evaluated point above terrain (e.g. window sill), m")
+    latitude: float = Field(default=51.0, ge=-66, le=66)
+    longitude: float = Field(default=17.0, ge=-180, le=180)
+    start_direction_point: Point2D | None = Field(default=None, description="Point giving the shadow direction where exposure starts")
+    end_direction_point: Point2D | None = Field(default=None, description="Point giving the shadow direction where exposure ends")
+    start_time: float | None = Field(default=None, ge=7, le=17, description="Used when no start_direction_point (hours, e.g. 8.5)")
+    end_time: float | None = Field(default=None, ge=7, le=17, description="Used when no end_direction_point")
+    description_point: Point2D | None = Field(default=None, description="Insert the result description here (layer a_naslonecznienie_opis)")
+    room_number: str | None = Field(default=None, description="Room label 'lokal N: 8:00-12:30 (4:30)'")
+    room_label_point: Point2D | None = None
+    hour_text_height: float | None = Field(default=None, gt=0, description="Drawing units; default 0.25 m")
+    description_text_height: float | None = Field(default=None, gt=0, description="Drawing units; default 0.5 m")
+    units: Literal["auto", "mm", "cm", "m"] = Field(default="auto", description="Drawing units; auto = INSUNITS (unitless = m)")
+    make_block: bool = Field(default=True, description="Group the ruler into one block (as the original command)")
+
+
+class VehicleOverrides(BaseModel):
+    """Vehicle dimensions in mm (defaults: Porsche Cayenne E3). Keys as in CAYENNE.LSP."""
+
+    model_config = {"extra": "forbid"}
+
+    NAME: str | None = None
+    L: float | None = Field(default=None, gt=0, description="Wheelbase")
+    FO: float | None = Field(default=None, ge=0, description="Front overhang")
+    RO: float | None = Field(default=None, ge=0, description="Rear overhang")
+    W: float | None = Field(default=None, gt=0, description="Body width without mirrors")
+    WM: float | None = Field(default=None, gt=0, description="Width with mirrors")
+    MX: float | None = Field(default=None, ge=0, description="Mirror start behind the front axle")
+    MD: float | None = Field(default=None, ge=0, description="Mirror length along the car")
+    TRF: float | None = Field(default=None, gt=0, description="Front track (tyre centre to tyre centre)")
+    TRR: float | None = Field(default=None, gt=0, description="Rear track")
+    TW: float | None = Field(default=None, gt=0, description="Tyre width")
+    TD: float | None = Field(default=None, gt=0, description="Tyre diameter")
+    TC: float | None = Field(default=None, gt=0, description="Turning circle, kerb to kerb")
+
+
+class SweptPathRequest(BaseModel):
+    """Vehicle swept path (obwiednia ruchu) along a path (port of CAYENNE.LSP v2.2)."""
+
+    path_handle: str = Field(min_length=1, description="Polyline / line / arc / spline: front axle centre (forward) or rear axle centre (reverse)")
+    direction: Literal["forward", "reverse"] = "forward"
+    against_drawing_direction: bool = Field(default=False, description="Drive from the end of the path to its start")
+    step_mm: float = Field(default=50.0, gt=0, le=1000)
+    outline_interval_mm: float = Field(default=0.0, ge=0, description="Draw the car outline every N mm (0 = never)")
+    auto_fillet: bool = Field(default=True, description="Round sharp LWPOLYLINE corners with the minimum radius first (new path on SP_SCIEZKA)")
+    units: Literal["auto", "mm", "cm", "m"] = "auto"
+    vehicle: VehicleOverrides = Field(default_factory=VehicleOverrides)
+
+
+class RoundPathRequest(BaseModel):
+    """Round the corners of a polyline route with the vehicle's minimum radius (port of SCIEZKA)."""
+
+    path_handle: str = Field(min_length=1)
+    direction: Literal["forward", "reverse"] = "forward"
+    radius_cm: float | None = Field(default=None, gt=0, description="Default: minimum radius for the direction")
+    units: Literal["auto", "mm", "cm", "m"] = "auto"
+    vehicle: VehicleOverrides = Field(default_factory=VehicleOverrides)
+
+
+class OffsetRequest(BaseModel):
+    handles: list[str] = Field(min_length=1)
+    distance: float = Field(description="Drawing units; the sign picks the side (as COM Offset)")
+    both_sides: bool = Field(default=False, description="Also offset by -distance")
+    layer: str | None = Field(default=None, description="Put the new entities on this (existing) layer")
