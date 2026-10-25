@@ -39,6 +39,7 @@ from zwcad_standard_mcp.models import (
 from zwcad_standard_mcp.adapters.selection import _wild
 from zwcad_standard_mcp import textops
 from zwcad_standard_mcp.services.lisp_tools import LispToolsMixin, lisp_enabled
+from zwcad_standard_mcp.settings_file import settings_report
 from zwcad_standard_mcp.permissions.policy import PermissionLevel
 from zwcad_standard_mcp.permissions_bridge import confirm_mode, require_permission
 
@@ -190,11 +191,12 @@ class CadService(LispToolsMixin):
             "write_requires_confirm": confirm_mode() == "strict",
             "delete_requires_second_confirm": confirm_mode() == "strict",
             "save_requires_path_and_confirm": confirm_mode() == "strict",
-            "how_to_change": "Set ZWCAD_MCP_CONFIRM_MODE=off (or strict) in the MCP server env and restart the client.",
+            "how_to_change": "configure --confirm-mode off|strict (writes %USERPROFILE%\\zwcad-mcp\\settings.json), then restart the client.",
             "adapter": self.settings.adapter,
             "max_batch_size": self.settings.max_batch_size,
             "max_query_results": self.settings.max_query_results,
             "execute_lisp_enabled": lisp_enabled(),
+            "settings_file": settings_report(),
             "lisp_counts": getattr(self.adapter, "use_lisp_counts", False),
         }
         if result.get("connected"):

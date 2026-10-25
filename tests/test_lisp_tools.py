@@ -134,3 +134,23 @@ def test_new_tools_are_registered() -> None:
                  "draw_sun_ruler", "vehicle_swept_path", "round_path_corners"):
         assert name in names
     assert len(names) == len(set(names))
+
+
+def test_settings_file_feeds_env_without_overriding(tmp_path) -> None:
+    import json
+
+    from zwcad_standard_mcp import settings_file
+
+    path = tmp_path / "settings.json"
+    path.write_text(json.dumps({"confirm_mode": "off", "execute_lisp": True, "ZWCAD_MCP_LISP_COUNTS": "0"}))
+    with _Env(ZWCAD_MCP_SETTINGS=str(path), ZWCAD_MCP_LISP_COUNTS="1"):
+        for key in ("ZWCAD_MCP_CONFIRM_MODE", "ZWCAD_MCP_ENABLE_LISP"):
+            os.environ.pop(key, None)
+        report = settings_file.apply_settings_file()
+        try:
+            assert report["applied"] == {"ZWCAD_MCP_CONFIRM_MODE": "off", "ZWCAD_MCP_ENABLE_LISP": "1"}
+            assert report["overridden_by_env"] == ["ZWCAD_MCP_LISP_COUNTS"]
+            assert os.environ["ZWCAD_MCP_LISP_COUNTS"] == "1"
+        finally:
+            os.environ.pop("ZWCAD_MCP_CONFIRM_MODE", None)
+            os.environ.pop("ZWCAD_MCP_ENABLE_LISP", None)
