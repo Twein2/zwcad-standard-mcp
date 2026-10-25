@@ -595,31 +595,38 @@ class CadService:
             return rejection
         self._ensure_write()
         budget = request.time_budget_s
+        timings: dict[str, float] = {"plan_s": round(time.monotonic() - started, 2)}
 
         def left() -> float:
             return budget - (time.monotonic() - started)
 
-        results: dict[str, Any] = {"renamed": [], "merged": [], "deleted": [], "delete_failed": [], "errors": []}
+        def lap(name: str, since: float) -> float:
+            now = time.monotonic()
+            timings[name] = round(now - since, 2)
+            return now
 
+        results: dict[str, Any] = {"renamed": [], "merged": [], "deleted": [], "delete_failed": [], "errors": []}
+        incomplete: list[str] = []
+        mark = time.monotonic()
+
+        # 1. Renames are instant and create most targets.
         for step in (s for s in plan["steps"] if s["action"] == "rename"):
             outcome = self.adapter.rename_layer(step["source"], step["target"])
             (results["renamed"] if outcome.get("success") else results["errors"]).append(outcome)
+        mark = lap("rename_s", mark)
 
-        specs = {spec.name.lower(): spec for spec in standard.layers}
-        for name in plan["create_layers"]:
-            specs.setdefault(name.lower(), LayerSpec(name=name))
-        if specs:
-            layer_results = self.adapter.ensure_layers(list(specs.values()))
-            results["errors"].extend(item for item in layer_results if not item.get("success"))
-            results["layers_ensured"] = len(layer_results)
+        # 2. Create only the targets that are still missing (properties come last, step 4).
+        if plan["create_layers"]:
+            created = self.adapter.ensure_layers([LayerSpec(name=name) for name in plan["create_layers"]])
+            results["errors"].extend(item for item in created if not item.get("success"))
+        mark = lap("create_s", mark)
 
-        incomplete: list[str] = []
+        # 3. Merge non-empty sources and delete emptied / empty ones — the part that needs the budget.
         for step in (s for s in plan["steps"] if s["action"] == "merge"):
             if left() <= 1:
                 incomplete.append(step["source"])
                 continue
             if not step["entities"]:
-                # Empty source: nothing to move, delete it directly (no selection round-trip).
                 if request.purge_sources:
                     deleted = self.adapter.delete_layer(step["source"])
                     (results["deleted"] if deleted.get("success") else results["delete_failed"]).append(deleted)
@@ -632,29 +639,39 @@ class CadService:
             if request.purge_sources:
                 deleted = self.adapter.delete_layer(step["source"])
                 (results["deleted"] if deleted.get("success") else results["delete_failed"]).append(deleted)
+        mark = lap("merge_s", mark)
 
-        if request.purge_unused and not incomplete:
-            # Never purge layers that the standard defines or targets, even when they are empty.
-            keep = {spec.name.lower() for spec in standard.layers} | {rule.target.lower() for rule in standard.rules}
-            for name in plan["empty_layers"]:
-                if name.lower() in keep:
-                    continue
-                if name == "0" or name.lower() in self._PROTECTED_LAYERS or "|" in name:
-                    continue
-                if any(name.lower() == step["source"].lower() for step in plan["steps"]):
-                    continue
-                if left() <= 1:
-                    incomplete.append(f"purge:{name}")
-                    continue
-                deleted = self.adapter.delete_layer(name)
-                (results["deleted"] if deleted.get("success") else results["delete_failed"]).append(deleted)
+        # 4. Once everything is merged: standard layer properties, then purge of other empty layers.
+        if not incomplete:
+            if standard.layers and left() > 1:
+                layer_results = self.adapter.ensure_layers(list(standard.layers))
+                results["errors"].extend(item for item in layer_results if not item.get("success"))
+                results["layers_ensured"] = len(layer_results)
+            elif standard.layers:
+                incomplete.append("standard layer properties")
+            mark = lap("standard_s", mark)
+            if request.purge_unused and not incomplete:
+                # Never purge layers that the standard defines or targets, even when they are empty.
+                keep = {spec.name.lower() for spec in standard.layers} | {rule.target.lower() for rule in standard.rules}
+                for name in plan["empty_layers"]:
+                    if name.lower() in keep or name == "0" or name.lower() in self._PROTECTED_LAYERS or "|" in name:
+                        continue
+                    if any(name.lower() == step["source"].lower() for step in plan["steps"]):
+                        continue
+                    if left() <= 1:
+                        incomplete.append(f"purge:{name}")
+                        continue
+                    deleted = self.adapter.delete_layer(name)
+                    (results["deleted"] if deleted.get("success") else results["delete_failed"]).append(deleted)
+                lap("purge_s", mark)
 
         merged = results["merged"]
         out = {
             "success": not results["errors"] and not incomplete,
             "dry_run": False,
             "complete": not incomplete,
-            "incomplete_sources": incomplete,
+            "incomplete_count": len(incomplete),
+            "incomplete_sample": incomplete[:10],
             "hint": "Run map_layers again to continue." if incomplete else None,
             "renamed": [f"{item['source']} -> {item['target']}" for item in results["renamed"]],
             "layers_ensured": results.get("layers_ensured", 0),
@@ -664,9 +681,11 @@ class CadService:
             "deleted_count": len(results["deleted"]),
             "delete_failed": results["delete_failed"][:20],
             "errors": results["errors"][:20],
+            "timings": timings,
             "elapsed_s": round(time.monotonic() - started, 3),
         }
         if request.verbose:
+            out["incomplete_sources"] = incomplete
             out["merged"] = merged
             out["deleted"] = [item["name"] for item in results["deleted"]]
         return out
@@ -963,7 +982,7 @@ class CadService:
         return {
             "success": True,
             "count": len(dialogs),
-            "dialogs": [{"title": d.get("title"), "buttons": d.get("buttons")} for d in dialogs],
+            "dialogs": [{"title": d.get("title"), "message": d.get("message", ""), "buttons": d.get("buttons")} for d in dialogs],
         }
 
     def get_cad_job(self, job_id: str) -> dict:

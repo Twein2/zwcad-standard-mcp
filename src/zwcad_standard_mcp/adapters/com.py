@@ -255,6 +255,12 @@ class ComCadAdapter(CadAdapter):
             "Closed",
             "Coordinates",
             "Measurement",
+            "StyleName",
+            "TextHeight",
+            "ScaleFactor",
+            "LinearScaleFactor",
+            "TextOverride",
+            "TextStyle",
         ):
             value = self._safe_get(entity, prop)
             if value is not None:
@@ -757,6 +763,14 @@ class ComCadAdapter(CadAdapter):
     def _refresh_dimensions(self, doc: Any, style_name: str) -> int:
         """Re-apply an updated dimension style to existing dimensions (they keep old geometry otherwise)."""
         refreshed = 0
+        # Re-assigning the same StyleName is a no-op (verified live, FINDINGS #39): switch to another style and back.
+        other = next(
+            (str(s.Name) for s in self._iter_collection(doc.DimStyles) if str(s.Name).lower() != style_name.lower()),
+            None,
+        )
+        if other is None:
+            other = "_ZWCAD_MCP_TMP"
+            doc.DimStyles.Add(other)
         with self._selection(doc) as selection:
             filter_type = self._win32_client.VARIANT(self._pythoncom.VT_ARRAY | self._pythoncom.VT_I2, (0, 3))
             filter_data = self._win32_client.VARIANT(
@@ -766,6 +780,7 @@ class ComCadAdapter(CadAdapter):
             selection.Select(5, origin, origin, filter_type, filter_data)
             for dim in self._iter_collection(selection):
                 with contextlib.suppress(Exception):
+                    dim.StyleName = other
                     dim.StyleName = style_name
                     dim.Update()
                     refreshed += 1
@@ -1041,7 +1056,8 @@ class ComCadAdapter(CadAdapter):
 
     def ensure_layers(self, layers: list[LayerSpec]) -> list[dict]:
         doc = self._doc()
-        existing = {item["name"].lower(): item for item in self.list_layers(detail=True)}
+        # Names only: reading 5 properties of every layer was the slowest part on 300-layer maps.
+        existing = {item["name"].lower(): item for item in self.list_layers(detail=False)}
         results: list[dict] = []
         with self._undo_group():
             for spec in layers:

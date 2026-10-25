@@ -91,7 +91,10 @@ class JobDetachedError(ZWCADMCPError):
         data.update(
             {
                 "job_id": self.job_id,
-                "dialogs": [{"title": d.get("title"), "buttons": d.get("buttons")} for d in self.dialogs],
+                "dialogs": [
+                    {"title": d.get("title"), "message": d.get("message", ""), "buttons": d.get("buttons")}
+                    for d in self.dialogs
+                ],
                 "hint": "Answer the dialog with dismiss_cad_dialog (or in ZWCAD), then call get_cad_job(job_id).",
             }
         )
