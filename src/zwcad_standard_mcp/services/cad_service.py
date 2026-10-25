@@ -562,6 +562,7 @@ class CadService:
         }
 
     def map_layers(self, request: LayerMapRequest, dry_run: bool = True, confirm: bool = False) -> dict:
+        started = time.monotonic()  # the budget covers the whole call, including planning (FINDINGS #38)
         standard = self._load_layer_standard(request)
         plan = self._plan_layer_map(standard)
         if dry_run:
@@ -592,8 +593,11 @@ class CadService:
         if rejection:
             return rejection
         self._ensure_write()
-        started = time.monotonic()
         budget = request.time_budget_s
+
+        def left() -> float:
+            return budget - (time.monotonic() - started)
+
         results: dict[str, Any] = {"renamed": [], "merged": [], "deleted": [], "delete_failed": [], "errors": []}
 
         for step in (s for s in plan["steps"] if s["action"] == "rename"):
@@ -610,17 +614,16 @@ class CadService:
 
         incomplete: list[str] = []
         for step in (s for s in plan["steps"] if s["action"] == "merge"):
+            if left() <= 1:
+                incomplete.append(step["source"])
+                continue
             if not step["entities"]:
                 # Empty source: nothing to move, delete it directly (no selection round-trip).
                 if request.purge_sources:
                     deleted = self.adapter.delete_layer(step["source"])
                     (results["deleted"] if deleted.get("success") else results["delete_failed"]).append(deleted)
                 continue
-            left = budget - (time.monotonic() - started)
-            if left <= 1:
-                incomplete.append(step["source"])
-                continue
-            moved = self.adapter.move_layer_entities(step["source"], step["target"], left)
+            moved = self.adapter.move_layer_entities(step["source"], step["target"], left())
             results["merged"].append({"source": step["source"], "target": step["target"], **moved})
             if moved.get("remaining") or moved.get("failed"):
                 incomplete.append(step["source"])
@@ -638,6 +641,9 @@ class CadService:
                 if name == "0" or name.lower() in self._PROTECTED_LAYERS or "|" in name:
                     continue
                 if any(name.lower() == step["source"].lower() for step in plan["steps"]):
+                    continue
+                if left() <= 1:
+                    incomplete.append(f"purge:{name}")
                     continue
                 deleted = self.adapter.delete_layer(name)
                 (results["deleted"] if deleted.get("success") else results["delete_failed"]).append(deleted)

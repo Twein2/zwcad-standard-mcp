@@ -728,6 +728,7 @@ class ComCadAdapter(CadAdapter):
                     failed[name] = str(exc)
             style = doc.DimStyles.Add(spec.name) if created else doc.DimStyles.Item(spec.name)
             style.CopyFrom(doc)
+            refreshed = 0 if created else self._refresh_dimensions(doc, spec.name)
             if spec.set_current:
                 doc.ActiveDimStyle = style
             else:
@@ -743,7 +744,25 @@ class ComCadAdapter(CadAdapter):
             "variables_set": applied,
             "variables_failed": failed,
             "current": spec.set_current,
+            "dimensions_refreshed": refreshed,
         }
+
+    def _refresh_dimensions(self, doc: Any, style_name: str) -> int:
+        """Re-apply an updated dimension style to existing dimensions (they keep old geometry otherwise)."""
+        refreshed = 0
+        with self._selection(doc) as selection:
+            filter_type = self._win32_client.VARIANT(self._pythoncom.VT_ARRAY | self._pythoncom.VT_I2, (0, 3))
+            filter_data = self._win32_client.VARIANT(
+                self._pythoncom.VT_ARRAY | self._pythoncom.VT_VARIANT, ("DIMENSION", style_name)
+            )
+            origin = self._point([0, 0, 0])
+            selection.Select(5, origin, origin, filter_type, filter_data)
+            for dim in self._iter_collection(selection):
+                with contextlib.suppress(Exception):
+                    dim.StyleName = style_name
+                    dim.Update()
+                    refreshed += 1
+        return refreshed
 
     def create_hatch(self, request: HatchRequest) -> dict:
         doc = self._doc()

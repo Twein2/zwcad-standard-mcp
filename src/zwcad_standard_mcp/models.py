@@ -163,7 +163,7 @@ class LayerMapRequest(BaseModel):
     standard_path: str | None = Field(default=None, description="Path to a JSON file with the same structure")
     purge_sources: bool = Field(default=True, description="Delete source layers once they are empty")
     purge_unused: bool = Field(default=False, description="Also try to delete every other empty layer")
-    time_budget_s: float = Field(default=45.0, gt=1, le=55, description="Stop moving entities after this time")
+    time_budget_s: float = Field(default=40.0, gt=1, le=50, description="Stop after this time (whole call); run again to continue")
     verbose: bool = Field(default=False, description="Return every step and layer name instead of a summary")
 
 

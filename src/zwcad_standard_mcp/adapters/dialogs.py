@@ -110,6 +110,8 @@ SAFE_DIALOG_ANSWERS: list[tuple[str, tuple[str, ...]]] = [
     ("proxy information", ("OK", "Close")),
     ("missing shx", ("Ignore", "Skip")),
     ("specify font", ("Cancel",)),
+    # Dense hatches on open: keep the drawing as is (does not change HPMAXLINES).
+    ("too many hatch lines", ("Keep degenerated display",)),
 ]
 
 

@@ -20,8 +20,9 @@ def register_annotation_tools(mcp: Any, service: CadService) -> None:
         """Create or update dimension styles from DIM* variables.
 
         Typical site plan (PZT) drawn in cm at 1:500 showing metres with 2 decimals: linear_scale=0.01,
-        decimals=2, decimal_separator=',', text_height=125 (2.5 mm on paper), arrow_block='_ARCHTICK'.
-        set_current=true makes it the active style.
+        decimals=2, decimal_separator=',', text_height=125 (2.5 mm on paper), arrow_block='_ARCHTICK',
+        overall_scale=1 (always set it: drawings often carry a large DIMSCALE that multiplies text and arrows).
+        set_current=true makes it the active style. Updating an existing style refreshes its dimensions.
         """
         return invoke(service.ensure_dim_styles, styles, dry_run, confirm)
 
