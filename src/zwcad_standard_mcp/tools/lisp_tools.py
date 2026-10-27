@@ -11,6 +11,7 @@ from zwcad_standard_mcp.models import (
     SunRulerRequest,
     SweptPathRequest,
     VehicleRouteRequest,
+    VerifyVehiclePathRequest,
 )
 from zwcad_standard_mcp.services import CadService
 
@@ -100,32 +101,57 @@ def register_lisp_tools(mcp: Any, service: CadService) -> None:
 
     @mcp.tool()
     def plan_vehicle_route(request: VehicleRouteRequest) -> dict:
-        """Find a collision-free car route inside a closed boundary from a start vector to an end vector.
+        """Find a collision-free car route inside a closed boundary from a start to an end.
 
-        USE THIS for requests like "draw the vehicle route from start to end avoiding the boundary". Read-only:
-        reads the boundary (closed LWPOLYLINE) and two vectors (2-point LWPOLYLINE or LINE, tail -> head = the
-        direction the car faces; by default the vector midpoint is the body centre), then plans in the server
-        in the QuickTurn model (as QuickTurn2's dynamic path: the guided axle follows tangent-continuous arcs with
-        R >= wheelbase / sin(lock), the car follows by the tractrix; whole body with mirrors kept margin_mm from the
-        boundary; Porsche Cayenne defaults, overridable). If the margin cannot be kept, the drivable route is
-        returned with `violations` (boundary edges that must be violated, with depth). allow_reverse=false checks forward-only driving and answers within seconds when
-        it is impossible. Planning runs in the background: if status is 'running', poll get_vehicle_route_plan.
-        Then draw_vehicle_route(plan_id) draws one polyline per gear and verifies it with the swept path.
+        USE THIS for requests like "draw the vehicle route from start to end avoiding the boundary". Read-only.
+        Start / end: a vector (2-point LWPOLYLINE or LINE, tail -> head = the direction the car faces; by default
+        the vector midpoint is the body centre, see anchor) or a bay (start_region_handle / end_region_handle:
+        closed polyline; the car centre anywhere inside, heading along the long axis ± heading_tolerance_deg,
+        both ways round tried, fewest gear changes then shortest length wins). The whole body with mirrors keeps
+        margin_mm (default 50 mm, exact, no hidden reserve) from the boundary; steering lock = atan(L/RR) from the
+        vehicle data (Porsche Cayenne defaults, overridable), steer_fraction < 1 adds a reserve.
+        Model: rear axle guided, wheel angle changes continuously while moving; with allow_steer_in_place
+        (default) the car may stop and turn the wheels (every gear change; inside a run for stop_penalty_m).
+        The result lists the stops per segment. A start pose closer than the margin is accepted
+        (start_collision='warn', reported). If the margin cannot be kept the route is returned with
+        `violations`; if nothing is found, `reason`/`stuck` say where the car gets stuck.
+        Planning runs in the background (default time_budget_s 300): poll get_vehicle_route_plan (stage, elapsed
+        time, best route so far), cancel with cancel_vehicle_route_plan. Then draw_vehicle_route(plan_id).
         Do not write your own planner or call vehicle_swept_path on the vectors.
         """
         return invoke(service.plan_vehicle_route, request)
 
     @mcp.tool()
     def get_vehicle_route_plan(plan_id: str, wait_s: float = 45.0) -> dict:
-        """Status / result of a plan_vehicle_route job (waits up to wait_s, max 55 s, while it is running)."""
+        """Status / result of a plan_vehicle_route job (waits up to wait_s, max 55 s, while it is running).
+        While running: progress.stage (heuristic / search / refine), elapsed_s and best_so_far."""
         return invoke(service.get_vehicle_route_plan, plan_id, wait_s)
 
     @mcp.tool()
+    def cancel_vehicle_route_plan(plan_id: str) -> dict:
+        """Stop a running plan_vehicle_route job; a route found before the cancel is kept and can be drawn."""
+        return invoke(service.cancel_vehicle_route_plan, plan_id)
+
+    @mcp.tool()
     def draw_vehicle_route(request: DrawVehicleRouteRequest, dry_run: bool = True, confirm: bool = False) -> dict:
-        """Draw a planned route (one LWPOLYLINE with arcs per gear: forward = front axle path, green; reverse = rear
-        axle path, red), mark the boundary parts the route has to violate (violation_layer, red with depth labels)
-        and, with verify=true, run vehicle_swept_path on every segment and check the envelopes against the boundary."""
+        """Draw a planned route: one LWPOLYLINE with arcs per gear (rear axle path; forward green, reverse red),
+        the stops on stop_layer (SP_POSTOJ, "stop: koła 32.9° L → 32.9° P"), the boundary parts the route has to
+        violate (violation_layer), and with verify=true the swept path of every segment checked against the
+        boundary. verified=true needs: steering within the lock, no steering jump while moving (jumps at the
+        declared stops are allowed) in forward and reverse alike, envelopes not crossing the boundary."""
         return invoke(service.draw_vehicle_route, request, dry_run, confirm)
+
+    @mcp.tool()
+    def verify_vehicle_path(request: VerifyVehiclePathRequest, dry_run: bool = True, confirm: bool = False) -> dict:
+        """Check a hand-made or simulated rear-axle path (e.g. JAZDA's SP_SLAD_JAZDY / SP_SCIEZKA) against a boundary.
+
+        Gear changes are detected from direction reversals, the wheel angle from the curvature, stops where the
+        angle jumps. Returns per-run lengths, max lock used, minimum clearance (exact, body with mirrors) and the
+        collisions (which car part hits which edge), ignoring the first part where the start pose already
+        collides (ignore_start_collision). dry_run=true only analyses; otherwise the runs, swept path envelopes,
+        stops and collisions are drawn like draw_vehicle_route.
+        """
+        return invoke(service.verify_vehicle_path, request, dry_run, confirm)
 
     @mcp.tool()
     def round_path_corners(request: RoundPathRequest, dry_run: bool = True, confirm: bool = False) -> dict:

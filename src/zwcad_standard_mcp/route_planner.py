@@ -94,7 +94,8 @@ class Car:
     rear: float       # rear axle -> rear bumper (positive)
     hw: float         # half body width
     mirror: tuple     # (x0, x1, half width with mirrors), rear-axle frame
-    rmin: float       # minimum radius of the rear axle centre
+    rmin: float       # minimum radius of the rear axle centre (full lock)
+    k: float = 1.0    # drawing units per mm
 
     @classmethod
     def from_vehicle(cls, v: dict, units: str) -> "Car":
@@ -102,7 +103,12 @@ class Car:
         rr = math.sqrt((v["TC"] * 0.5) ** 2 - v["L"] ** 2) - v["TRF"] * 0.5
         mx1 = (v["L"] - v["MX"]) * k
         return cls(L=v["L"] * k, front=(v["L"] + v["FO"]) * k, rear=v["RO"] * k, hw=v["W"] * 0.5 * k,
-                   mirror=(mx1 - v["MD"] * k, mx1, v["WM"] * 0.5 * k), rmin=rr * k)
+                   mirror=(mx1 - v["MD"] * k, mx1, v["WM"] * 0.5 * k), rmin=rr * k, k=k)
+
+    @property
+    def lock(self) -> float:
+        """Steering lock (rad) from the vehicle data: atan(L / RR), RR = sqrt((TC/2)^2 - L^2) - TRF/2."""
+        return math.atan2(self.L, self.rmin)
 
     def outline(self, spacing: float):
         def seg(a, b):
@@ -236,7 +242,7 @@ class HeadingLattice:
     """
 
     def __init__(self, free_many, poly, goal, radius, res_xy: float, n_head: int, allow_reverse: bool,
-                 rev_w: float, certain_only: bool = True):
+                 rev_w: float, certain_only: bool = True, goals=None):
         self.res, self.n = res_xy, n_head
         self.x0, self.y0 = poly.min(axis=0) - res_xy
         x1, y1 = poly.max(axis=0) + res_xy
@@ -271,20 +277,21 @@ class HeadingLattice:
             prims.append(lst)
         inf = math.inf
         cost = [inf] * (nx * ny * n)
-        gi = min(max(int(round((goal[0] - self.x0) / res_xy)), 0), nx - 1)
-        gj = min(max(int(round((goal[1] - self.y0) / res_xy)), 0), ny - 1)
-        gh = int(round(wrap(goal[2]) / dth)) % n
         pq = []
-        for di in (-1, 0, 1):          # seed the goal cell and its neighbours (rounding tolerance)
-            for dj in (-1, 0, 1):
-                for dh in (-1, 0, 1):
-                    i, j, h = gi + di, gj + dj, (gh + dh) % n
-                    if 0 <= i < nx and 0 <= j < ny:
-                        idx = (i * ny + j) * n + h
-                        c0 = (abs(di) + abs(dj)) * res_xy
-                        if self.free[idx] and c0 < cost[idx]:
-                            cost[idx] = c0
-                            heapq.heappush(pq, (c0, i, j, h))
+        for gl in (goals or [goal]):   # seed every goal cell and its neighbours (rounding tolerance)
+            gi = min(max(int(round((gl[0] - self.x0) / res_xy)), 0), nx - 1)
+            gj = min(max(int(round((gl[1] - self.y0) / res_xy)), 0), ny - 1)
+            gh = int(round(wrap(gl[2]) / dth)) % n
+            for di in (-1, 0, 1):
+                for dj in (-1, 0, 1):
+                    for dh in (-1, 0, 1):
+                        i, j, h = gi + di, gj + dj, (gh + dh) % n
+                        if 0 <= i < nx and 0 <= j < ny:
+                            idx = (i * ny + j) * n + h
+                            c0 = (abs(di) + abs(dj)) * res_xy
+                            if self.free[idx] and c0 < cost[idx]:
+                                cost[idx] = c0
+                                heapq.heappush(pq, (c0, i, j, h))
         fr = self.free
         while pq:
             c, i, j, h = heapq.heappop(pq)
@@ -369,7 +376,7 @@ def _segments_to_vertices(start_xy, start_tau, pieces, radius):
 
 def _plan_once(boundary, start_vec, end_vec, vehicle: dict, units: str = "cm", *, margin_mm: float = 100.0,
                allow_reverse: bool = True, max_gear_changes: int = 3, step_mm: float = 250.0,
-               steer_fraction: float = 0.95, time_budget_s: float = 50.0, anchor: str = "centre",
+               steer_fraction: float = 1.0, time_budget_s: float = 50.0, anchor: str = "centre",
                h_weight: float = 2.0, guide: str = "relaxed", switch_factor: float = 1.03,
                xy_bin_factor: float = 0.2, steer_factor: float = 0.08, th_bin_factor: float = 0.5,
                _lattice=None, reference=None) -> dict[str, Any]:
@@ -380,7 +387,6 @@ def _plan_once(boundary, start_vec, end_vec, vehicle: dict, units: str = "cm", *
     car = Car.from_vehicle(vehicle, units)
     margin, step = margin_mm * k, step_mm * k
     margin_user = margin
-    margin = margin + 10.0 * k          # 1 cm reserve for the sampling density of the search
     poly = np.asarray(boundary, dtype=float)[:, :2]
     if len(poly) < 3:
         raise PlanningError("The boundary needs at least 3 points.")
@@ -434,7 +440,7 @@ def _plan_once(boundary, start_vec, end_vec, vehicle: dict, units: str = "cm", *
                                 f"(clearance {c:.1f} < margin {margin:.1f} drawing units). "
                                 "Check the vector direction and the anchor convention.")
 
-    kmax = steer_fraction / car.rmin
+    kmax = math.tan(car.lock * steer_fraction) / car.L
     rev_w = 1.5
     gx, gy = goal[0], goal[1]
     lat = _lattice or HeadingLattice(free_many, poly, goal, car.rmin * 0.8, res_xy=250.0 * k, n_head=24,
@@ -778,10 +784,12 @@ def _plan_once(boundary, start_vec, end_vec, vehicle: dict, units: str = "cm", *
     return result
 
 
-def plan_route(boundary, start_vec, end_vec, vehicle: dict, units: str = "cm", *, time_budget_s: float = 120.0,
-               max_gear_changes: int = 3, margin_mm: float = 100.0, allow_reverse: bool = True,
-               anchor: str = "centre", **kw) -> dict[str, Any]:
-    """Stage 1: fast rigid-model search for the corridor and the gear changes (route_rigid).
+def plan_route_legacy(boundary, start_vec, end_vec, vehicle: dict, units: str = "cm", *, time_budget_s: float = 120.0,
+                      max_gear_changes: int = 3, margin_mm: float = 50.0, allow_reverse: bool = True,
+                      anchor: str = "centre", steer_fraction: float = 1.0, **kw) -> dict[str, Any]:
+    """Without steering in place (allow_steer_in_place=false): the QuickTurn-model planner of #57.
+
+    Stage 1: fast rigid-model search for the corridor and the gear changes (route_rigid).
     Stage 2: the route the car really drives, built like QuickTurn2's dynamic path (route_qt): tangent-continuous
     arcs with R >= RMIN for the guided axle, car pose by the exact tractrix; waypoints optimised for clearance."""
     from zwcad_standard_mcp import route_qt, route_rigid
@@ -792,19 +800,19 @@ def plan_route(boundary, start_vec, end_vec, vehicle: dict, units: str = "cm", *
     try:
         ref = route_rigid.plan_route(boundary, start_vec, end_vec, vehicle, units, max_gear_changes=max_gear_changes,
                                      time_budget_s=0.45 * time_budget_s, margin_mm=margin_mm,
-                                     allow_reverse=allow_reverse, anchor=anchor)
+                                     allow_reverse=allow_reverse, anchor=anchor, steer_fraction=steer_fraction)
     except route_rigid.PlanningError:
         # the start or end pose itself is closer than the margin: find the corridor without margin and report
         # the violated edges from the drivable route
         corridor_margin = 0.0
         ref = route_rigid.plan_route(boundary, start_vec, end_vec, vehicle, units, max_gear_changes=max_gear_changes,
                                      time_budget_s=0.45 * time_budget_s, margin_mm=0.0,
-                                     allow_reverse=allow_reverse, anchor=anchor)
+                                     allow_reverse=allow_reverse, anchor=anchor, steer_fraction=steer_fraction)
     if not ref.get("found") and corridor_margin > 0:
         # no corridor with the margin: try without it, the violated edges are reported
         ref2 = route_rigid.plan_route(boundary, start_vec, end_vec, vehicle, units, max_gear_changes=max_gear_changes,
                                       time_budget_s=0.35 * time_budget_s, margin_mm=0.0,
-                                      allow_reverse=allow_reverse, anchor=anchor)
+                                      allow_reverse=allow_reverse, anchor=anchor, steer_fraction=steer_fraction)
         if ref2.get("found"):
             ref, corridor_margin = ref2, 0.0
     reference = ref.pop("_reference", None)
@@ -820,8 +828,8 @@ def plan_route(boundary, start_vec, end_vec, vehicle: dict, units: str = "cm", *
     goal = vector_pose(end_vec, offsets[anchor], anchor)
     pts = np.asarray(boundary, dtype=float)[:, :2]
     left = max(10.0, time_budget_s - (time.monotonic() - t0))
-    res = route_qt.solve(pts, start, goal, car, 0.95 / car.rmin, margin_mm * k + 10.0 * k, 50.0 * k,
-                         reference, left, margin_mm * k)
+    kmax = math.tan(car.lock * steer_fraction) / car.L
+    res = route_qt.solve(pts, start, goal, car, kmax, margin_mm * k, 50.0 * k, reference, left, margin_mm * k)
     out = {"units": units, "allow_reverse": allow_reverse, "margin": round(margin_mm * k, 3),
            "start_rear_axle": [round(v, 3) for v in start], "goal_rear_axle": [round(v, 3) for v in goal],
            "corridor": {"gear_changes": ref["gear_changes"], "length": ref["total_length"],
@@ -829,12 +837,159 @@ def plan_route(boundary, start_vec, end_vec, vehicle: dict, units: str = "cm", *
            "model": ("QuickTurn2 dynamic path: the guided axle (front when driving forward, rear when reversing) "
                      "follows tangent-continuous arcs with R >= RMIN = wheelbase / sin(lock); the car follows by "
                      "the exact tractrix step; reverse keeps the car axis tangent to the rear-axle path"),
-           "front_axle_min_radius": round(math.hypot(car.rmin / 0.95, car.L), 2),
-           "rear_axle_min_radius": round(car.rmin / 0.95, 2), **res}
+           "front_axle_min_radius": round(math.hypot(1.0 / kmax, car.L), 2),
+           "rear_axle_min_radius": round(1.0 / kmax, 2), **res}
     if not res["found"]:
         out["reason"] = f"no drivable route reaches the end pose: {res['end_error']}"
     elif res["violations"]:
         out["warning"] = (f"the drivable route needs {len(res['violations'])} boundary edge(s) to be violated "
                           "(closer than the margin or crossed); see violations, draw_vehicle_route marks them")
+    out["elapsed_s"] = round(time.monotonic() - t0, 1)
+    return out
+
+
+def plan_route(boundary, start_vec, end_vec, vehicle: dict, units: str = "cm", *, time_budget_s: float = 300.0,
+               max_gear_changes: int = 3, margin_mm: float = 50.0, allow_reverse: bool = True,
+               anchor: str = "centre", steer_fraction: float = 1.0, allow_steer_in_place: bool = True,
+               stop_penalty_m: float = 2.0, start_collision: str = "warn", end_position_tolerance_mm: float = 0.0,
+               end_heading_tolerance_deg: float = 1.0, start_region=None, end_region=None,
+               heading_tolerance_deg: float = 10.0, steer_rate_deg_per_m: float = 30.0,
+               progress=None, cancel=None) -> dict[str, Any]:
+    """Plan a route for the car inside a closed boundary.
+
+    Start / end: a vector (tail -> head = heading, see ``anchor``) or a region (closed polygon of a bay: the car
+    centre anywhere inside, heading along the long axis ± ``heading_tolerance_deg``, both ways round tried).
+    With ``allow_steer_in_place`` (default) the car may stop and turn the wheels (route_cc); without it the
+    QuickTurn-model planner of #57 is used (plan_route_legacy).
+    """
+    from zwcad_standard_mcp import route_cc, route_check
+
+    require_numpy()
+    t0 = time.monotonic()
+    k = UNIT_PER_MM[units]
+    car = Car.from_vehicle(vehicle, units)
+    if not 0.1 <= steer_fraction <= 1.0:
+        raise PlanningError("steer_fraction must be between 0.1 and 1.0.")
+    lock = car.lock * steer_fraction
+    r_rear = car.L / math.tan(lock)
+    steering = {"lock_deg": round(math.degrees(car.lock), 2), "steer_fraction": steer_fraction,
+                "lock_used_deg": round(math.degrees(lock), 2), "rear_axle_min_radius": round(r_rear, 2),
+                "front_axle_min_radius": round(math.hypot(r_rear, car.L), 2),
+                "impossibility_check": ("a quick relaxed check (80 % of the minimum turning radius, body without "
+                                        "mirrors, 25 cm lattice) answers impossible cases; it never rejects a "
+                                        "route the full model could drive")}
+    if not allow_steer_in_place:
+        if start_vec is None or end_vec is None:
+            raise PlanningError("Start/end regions need allow_steer_in_place=true; pass vectors instead.")
+        out = plan_route_legacy(boundary, start_vec, end_vec, vehicle, units, time_budget_s=time_budget_s,
+                                max_gear_changes=max_gear_changes, margin_mm=margin_mm, allow_reverse=allow_reverse,
+                                anchor=anchor, steer_fraction=steer_fraction)
+        out.update(steering)
+        out["allow_steer_in_place"] = False
+        return out
+    poly = np.asarray(boundary, dtype=float)[:, :2]
+    if len(poly) < 3:
+        raise PlanningError("The boundary needs at least 3 points.")
+    offsets = {"centre": 0.5 * (car.front - car.rear), "rear_axle": 0.0, "front_axle": car.L}
+    if anchor not in offsets:
+        raise PlanningError("anchor must be 'centre', 'rear_axle' or 'front_axle'.")
+    res = 50.0 * k
+    head_tol = math.radians(heading_tolerance_deg)
+    if start_region is not None:
+        start_variants = [(f"bay, heading {math.degrees(wrap(route_cc.region_frame(start_region)[2] + w * math.pi)):.1f} deg",
+                           route_cc.region_starts(start_region, car, head_tol, w)) for w in (0, 1)]
+    elif start_vec is not None:
+        start_variants = [("vector", [vector_pose(start_vec, offsets[anchor], anchor)])]
+    else:
+        raise PlanningError("Give a start vector or a start region.")
+    if end_region is not None:
+        goal_variants = []
+        for w in (0, 1):
+            g_ = route_cc.region_goal(end_region, car, head_tol, res, which=w)
+            goal_variants.append((f"bay, heading {g_.info['heading_deg'][0]} deg", g_))
+    elif end_vec is not None:
+        goal_pose = vector_pose(end_vec, offsets[anchor], anchor)
+        goal_variants = [("vector", route_cc.pose_goal(goal_pose, max(end_position_tolerance_mm * k, 1e-6),
+                                                       math.radians(max(end_heading_tolerance_deg, 1e-6))))]
+    else:
+        raise PlanningError("Give an end vector or an end region.")
+    if start_collision not in ("warn", "strict"):
+        raise PlanningError("start_collision must be 'warn' or 'strict'.")
+    margin = margin_mm * k
+    opt = route_cc.Options(margin=margin, lock=lock, allow_reverse=allow_reverse, max_gear_changes=max_gear_changes,
+                           allow_steer_in_place=True, stop_penalty=stop_penalty_m * 1000.0 * k,
+                           steer_rate_deg_per_m=steer_rate_deg_per_m, step=250.0 * k, n_sub=5, rev_w=1.3,
+                           switch_cost=4000.0 * k, min_run=1500.0 * k, xy_bin=100.0 * k, th_bin_deg=2.0,
+                           h_weight=2.0, start_collision=start_collision, unit_m=1000.0 * k)
+    base = {"units": units, "allow_reverse": allow_reverse, "allow_steer_in_place": True,
+            "margin": round(margin, 3), "stop_penalty_m": stop_penalty_m,
+            "steer_rate_deg_per_m": steer_rate_deg_per_m, **steering,
+            "model": ("rear axle guided (kinematic bicycle, as the JAZDA simulator): while moving the wheel angle "
+                      f"changes continuously (max {steer_rate_deg_per_m:g} deg/m); at a stop (every gear change, and "
+                      "inside a run when it helps) the wheels may turn to any angle within ±lock; segments are the "
+                      "REAR axle path in driving order")}
+    # an end the car cannot reach with the margin (the end pose itself is too close): go straight to margin 0
+    model = route_cc.Model(poly, car, res)
+    end_clear = max(float(model.clearance(np.array(g_.targets, dtype=float)).max()) for _, g_ in goal_variants)
+    first: dict[str, Any] = {}
+    margin_used = margin
+    if margin > 0 and end_clear < margin and end_region is None:
+        first = {"reason": f"the end pose is closer to the boundary than the margin (clearance {end_clear:.1f})"}
+        res_cc = {"found": False, "stage": "search"}
+    else:
+        res_cc = route_cc.solve(poly, car, start_variants, goal_variants, opt, time_budget_s, res,
+                                progress=progress, cancel=cancel, search_share=0.5 if margin > 0 else 1.0)
+    if not res_cc.get("found") and margin > 0 and not res_cc.get("cancelled") and res_cc.get("stage") == "search":
+        left = time_budget_s - (time.monotonic() - t0)
+        if left > 5.0:
+            # no route keeps the margin: look for one without it and report the edges that get too close
+            opt0 = route_cc.Options(**{**opt.__dict__, "margin": 0.0})
+            if progress:
+                progress({"stage": "search", "note": "no route with the margin; searching with margin 0"})
+            res0 = route_cc.solve(poly, car, start_variants, goal_variants, opt0, left, res,
+                                  progress=progress, cancel=cancel)
+            if res0.get("found"):
+                res0["first_attempt"] = first or {k_: v_ for k_, v_ in res_cc.items()
+                                                  if k_ in ("reason", "stuck", "variants")}
+                res_cc, margin_used = res0, 0.0
+            elif not res_cc.get("reason"):
+                res_cc = res0
+    if not res_cc.get("found"):
+        res_cc.pop("planner", None)
+        return {**base, **res_cc, "elapsed_s": round(time.monotonic() - t0, 1)}
+    route = res_cc.pop("route")
+    res_cc.pop("planner", None)
+    segments = route_cc.runs_to_segments(route, lock, car.L)
+    P = route_cc.route_poses(route, car.L, every=25.0 * k)
+    clr = route_check.exact_clearance(P, car, poly)
+    first_ok = int(np.argmax(clr >= margin)) if (clr >= margin).any() else len(clr)
+    start_part = None
+    if first_ok > 0:
+        d = np.hypot(np.diff(P[:first_ok + 1, 0]), np.diff(P[:first_ok + 1, 1])).sum() if first_ok < len(P) else 0.0
+        start_part = {"length": round(float(d), 2), "min_clearance": round(float(clr[:first_ok].min()), 2),
+                      "max_penetration": round(float(max(0.0, -clr[:first_ok].min())), 2),
+                      "note": "the start pose is closer than the margin; the route may stay below the margin "
+                              "only until the car first reaches it (start_collision='warn')"}
+    rest = clr[first_ok:] if first_ok < len(clr) else clr[-1:]
+    violations = route_check.edge_violations(P[first_ok:], car, poly, margin) if (rest < margin).any() else []
+    end = route["end"]
+    stops = sum(len(s_["stops"]) for s_ in segments)
+    out = {**base, **res_cc, "stage": "done", "found": True, "success": True,
+           "start_rear_axle": [round(v, 3) for v in route["start"]],
+           "end_rear_axle": [round(v, 3) for v in end],
+           "gear_changes": len(segments) - 1, "stops": stops,
+           "total_length": round(sum(s_["length"] for s_ in segments), 2),
+           "min_clearance": round(float(rest.min()), 2), "clearance_ok": bool((rest >= margin - 1e-9).all()),
+           "margin_used_by_search": round(margin_used, 3),
+           "max_steer_deg": round(max(s_["max_steer_deg"] for s_ in segments), 2),
+           "start_collision": start_part, "violations": violations, "segments": segments}
+    if end_vec is not None and end_region is None:
+        gp = vector_pose(end_vec, offsets[anchor], anchor)
+        out["end_error"] = {"distance": round(math.hypot(end[0] - gp[0], end[1] - gp[1]), 3),
+                            "heading_deg": round(math.degrees(wrap(end[2] - gp[2])), 3)}
+    if violations:
+        out["warning"] = (f"no route keeps the margin of {margin:g} drawing units; this one needs "
+                          f"{len(violations)} boundary edge(s) to be closer (see violations, marked by "
+                          "draw_vehicle_route)" + ("; it crosses the boundary" if (rest < 0).any() else ""))
     out["elapsed_s"] = round(time.monotonic() - t0, 1)
     return out
