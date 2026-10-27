@@ -552,11 +552,11 @@ def runs_to_segments(route: dict, lock: float, L: float) -> list[dict]:
         for dl, ln in merged:
             kappa = math.tan(dl) / L
             dth = kappa * ln * (1 if fwd else -1)          # change of the car heading = change of the path tangent
-            verts.append([round(x, 4), round(y, 4), round(math.tan(dth / 4.0), 8) if abs(dth) > 1e-12 else 0.0])
+            verts.append([round(x, 7), round(y, 7), round(math.tan(dth / 4.0), 10) if abs(dth) > 1e-12 else 0.0])
             x, y, th = arc_end(x, y, th, kappa, ln * (1 if fwd else -1))
             dist += ln
             cut_pts.append(dist)
-        verts.append([round(x, 4), round(y, 4), 0.0])
+        verts.append([round(x, 7), round(y, 7), 0.0])
         stops = [{"position": [round(s_["pos"][0], 3), round(s_["pos"][1], 3)],
                   "distance": round(s_["at"], 2),
                   "wheel_angle_before_deg": round(math.degrees(s_["before"]), 2),
@@ -619,13 +619,14 @@ def solve(poly, car: Car, start_variants, goal_variants, opt: Options, time_budg
         report({"stage": stage, "elapsed_s": round(time.monotonic() - t0, 1), **kw})
 
     model = Model(poly, car, res)
+    stage = ["heuristic"]
     rep("heuristic")
     lattices = {}
     planners = []
     for gl, goal in goal_variants:
         for sl, starts in start_variants:
             pl = Planner(poly, car, starts, goal, opt, res, cancel=cancel, model=model, lattice=lattices.get(gl),
-                         progress=lambda info: rep("search", **info))
+                         progress=lambda info: rep(stage[0], **info))
             if pl.lattice is None:
                 lattices[gl] = pl.build_lattice()
             planners.append((sl, gl, pl))
@@ -652,6 +653,9 @@ def solve(poly, car: Car, start_variants, goal_variants, opt: Options, time_budg
                               "body without mirrors); set allow_reverse=true" if not opt.allow_reverse
                               else " even with reversing (relaxed model: 80 % of the minimum turning radius, body "
                                    "without mirrors); the space is too tight for this vehicle"))}
+    # most promising combination first (lowest relaxed cost-to-go from its start poses)
+    reachable.sort(key=lambda p_: min(p_[2].heur(*r_[0]) for r_ in p_[2].roots))
+    stage[0] = "search"
     variants, results = [], []
     first_found_s = 0.0
     try:
@@ -701,6 +705,7 @@ def solve(poly, car: Car, start_variants, goal_variants, opt: Options, time_budg
         return out
     rank, best_cost, best, pl, sl, gl = min(results, key=lambda r_: r_[0])
     first_s = round(time.monotonic() - t0, 1)
+    stage[0] = "refine"
     rep("refine", best_so_far=_summary(best))
     refinements, cancelled = 0, False
     try:

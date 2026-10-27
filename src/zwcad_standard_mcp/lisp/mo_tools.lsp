@@ -691,7 +691,7 @@
                         PF PFp PR ux tg tg0 tgN nl phi dd th a0 a1 dl dmaxf over prevover nover nextd hb
                         lPOSE lPF lTFL lTFR lTRL lTRR ext pth envq lENV rec k bidx rmax rminr lLeft lRight
                         ps q p npts GP tgw dlt thp sprev rfc fx r env tyres pos warn PFe PRe sdl psdl djmax
-                        rg sgn stops nexc jmp)
+                        rg sgn stops nexc jmp nst)
   (mosp:layers-begin opts)
   (setq *MOSP:VEH* (mosp:vehicle (zwmcp:opt "vehicle" opts nil))
         bk (= (zwmcp:opt "mode" opts "Przod") "Tyl")
@@ -854,6 +854,9 @@
     ;; steering change between calculation steps: a jump means the path has a kink (forward) or a curvature
     ;; jump (reverse) - the wheels would have to turn instantly (FINDINGS #57)
     ;; a jump at a declared stop (the car stands and the driver turns the wheels) is allowed
+    ;; rear-guided: the first station has no steering estimate yet (placeholder 0): no jump to or from it
+    (setq nst (if nst (1+ nst) 1))
+    (if (and rg (< nst 3)) (setq psdl nil))
     (if psdl
       (progn
         (setq jmp (abs (- sdl psdl)))
@@ -863,7 +866,7 @@
           (setq djmax (max djmax jmp)))))
     (setq psdl sdl)
     (setq dmaxf (max dmaxf dl)
-          over  (> dl (+ dmax 1e-4)))
+          over  (> dl (+ dmax 1e-3)))     ; 0.06 deg: steering estimated from tangents of a drawn path
     (setq lPOSE (cons (list PF ux) lPOSE))
     (if (or (null lPF) (> (distance GP (car lPF)) (* 0.01 stp)))
       (setq lPF (cons GP lPF)))
