@@ -25,7 +25,26 @@ and car outlines every 2 m (white), front / rear axle end positions (green). The
 lane on the right and turns left to the north; the car then reverses in an arc into the bay on the left.
 Zero intersections with the boundary, minimum clearance 10.7 cm.*
 
-## How plan_vehicle_route works now (QuickTurn model)
+## How plan_vehicle_route works since 2026-10-27 (steering in place, FINDINGS #62-#67)
+
+The QuickTurn planner below could not find the owner's garage manoeuvre on SOJ (it used 95 % of the lock, a
+hidden 1 cm reserve, no stop to turn the wheels and an exact end pose). The default planner (`route_cc.py`) now:
+
+1. models the car like the owner's JAZDA simulator: rear axle guided, wheel angle continuous while moving
+   (30 deg/m), full lock atan(L/RR) = 32.90 deg for the Cayenne, and stops where the wheels may turn to any angle
+   (every gear change; inside a run for `stop_penalty_m`, default 2 m);
+2. searches with a hybrid A* over (x, y, heading, wheel angle, gear), guided by a heading lattice that also answers
+   impossible cases, with exact Dubins tails to the goal (their curvature changes are stops);
+3. refines the first route with the remaining time (anytime search, best cost as bound);
+4. re-checks the final poses exactly (car polygon with mirrors vs boundary polygon, including wall ends that poke
+   between outline samples).
+
+SOJ result (offline, margin 0, start = pose 23 of the owner's trace, end = its last pose): first route in about
+5 s, one gear change, two stops, 26.9 m, minimum clearance 0.2 cm, steering within 32.90 deg. With
+`allow_steer_in_place=false` the QuickTurn planner below is still available (now with the full lock and without
+the hidden reserve).
+
+## How plan_vehicle_route worked before (QuickTurn model, `allow_steer_in_place=false`)
 
 1. **Corridor** (`route_rigid.py`): fast hybrid A* in a simplified rigid model finds where the car can go and where
    to change gear (a few seconds). Its path is *not* drawn: it may need instant steering changes.

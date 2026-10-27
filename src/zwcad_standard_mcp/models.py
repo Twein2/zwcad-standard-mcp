@@ -3,7 +3,7 @@ from __future__ import annotations
 import fnmatch
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 Scope = Literal["model", "paper", "all_layouts"]
@@ -359,23 +359,45 @@ class SweptPathRequest(BaseModel):
 
 
 class VehicleRouteRequest(BaseModel):
-    """Plan a collision-free route for a car inside a closed boundary, from a start vector to an end vector."""
+    """Plan a collision-free route for a car inside a closed boundary, from a start to an end (vector or bay)."""
 
     model_config = {"extra": "forbid"}
 
     boundary_handle: str = Field(min_length=1, description="Closed LWPOLYLINE the whole car (with mirrors) must stay inside")
-    start_handle: str = Field(min_length=1, description="Start vector: 2-point LWPOLYLINE or LINE, tail -> head = direction the car faces")
-    end_handle: str = Field(min_length=1, description="End vector, same convention")
+    start_handle: str | None = Field(default=None, description="Start vector: 2-point LWPOLYLINE or LINE, tail -> head = direction the car faces")
+    end_handle: str | None = Field(default=None, description="End vector, same convention")
+    start_region_handle: str | None = Field(
+        default=None, description="Instead of start_handle: the start bay (closed polyline). The car centre is "
+                                  "anywhere inside, heading along the long axis ± heading_tolerance_deg, both ways tried")
+    end_region_handle: str | None = Field(default=None, description="Instead of end_handle: the end bay (closed polyline), as start_region_handle")
     anchor: Literal["centre", "rear_axle", "front_axle"] = Field(
         default="centre", description="What the vector marks: 'centre' = its midpoint is the body centre; "
                                       "'rear_axle' / 'front_axle' = its tail is that axle centre")
     allow_reverse: bool = Field(default=True, description="false = forward driving only (answers quickly when impossible)")
     max_gear_changes: int = Field(default=3, ge=0, le=8)
-    margin_mm: float = Field(default=100.0, ge=0, description="Minimum clearance between car and boundary")
-    time_budget_s: float = Field(default=120.0, gt=0, le=900, description="Total planning time; runs in the background")
+    margin_mm: float = Field(default=50.0, ge=0, description="Minimum clearance between car (with mirrors) and boundary; exact, no hidden reserve")
+    steer_fraction: float = Field(default=1.0, ge=0.1, le=1.0,
+                                  description="Share of the steering lock atan(L/RR) the route may use (safety reserve); the result prints the lock and radii")
+    allow_steer_in_place: bool = Field(default=True, description="The car may stop and turn the wheels (gear changes and stops inside a run)")
+    stop_penalty_m: float = Field(default=2.0, ge=0, le=50, description="Cost of one stop inside a run, in metres of driving")
+    start_collision: Literal["warn", "strict"] = Field(
+        default="warn", description="warn: a start pose closer than the margin (or colliding) is accepted; the route may stay "
+                                    "below the margin until it first reaches it (reported); strict: error")
+    end_position_tolerance_mm: float = Field(default=0.0, ge=0, description="End vector: allowed position error")
+    end_heading_tolerance_deg: float = Field(default=1.0, ge=0, le=45, description="End vector: allowed heading error")
+    heading_tolerance_deg: float = Field(default=10.0, ge=0, le=45, description="Bay regions: allowed deviation from the long axis")
+    time_budget_s: float = Field(default=300.0, gt=0, le=900, description="Total planning time; runs in the background")
     wait_s: float = Field(default=45.0, ge=0, le=55, description="How long this call waits before returning a running plan_id")
     units: Literal["auto", "mm", "cm", "m"] = "auto"
     vehicle: VehicleOverrides = Field(default_factory=VehicleOverrides)
+
+    @model_validator(mode="after")
+    def _one_start_one_end(self) -> "VehicleRouteRequest":
+        if (self.start_handle is None) == (self.start_region_handle is None):
+            raise ValueError("Give exactly one of start_handle (vector) and start_region_handle (bay).")
+        if (self.end_handle is None) == (self.end_region_handle is None):
+            raise ValueError("Give exactly one of end_handle (vector) and end_region_handle (bay).")
+        return self
 
 
 class DrawVehicleRouteRequest(BaseModel):
@@ -385,8 +407,30 @@ class DrawVehicleRouteRequest(BaseModel):
     layer: str = Field(default="VEHICLE_ROUTE", min_length=1)
     violation_layer: str = Field(default="SP_NARUSZENIE", min_length=1,
                                  description="Layer for the boundary parts the route has to violate (red, with labels)")
+    stop_layer: str = Field(default="SP_POSTOJ", min_length=1, description="Layer for the stops (wheels turned while standing)")
     verify: bool = Field(default=True, description="Run vehicle_swept_path on every segment and check the envelopes against the boundary")
     outline_interval_mm: float = Field(default=2000.0, ge=0, description="Car outline every N mm in the swept path (0 = none)")
+
+
+class VerifyVehiclePathRequest(BaseModel):
+    """Check a hand-made / simulated path (e.g. JAZDA's SP_SLAD_JAZDY or SP_SCIEZKA) against a boundary."""
+
+    model_config = {"extra": "forbid"}
+
+    path_handle: str = Field(min_length=1, description="LWPOLYLINE of the rear axle centre in driving order (gear changes = direction reversals)")
+    boundary_handle: str = Field(min_length=1, description="Closed LWPOLYLINE the whole car (with mirrors) must stay inside")
+    anchor: Literal["rear_axle"] = Field(default="rear_axle", description="The path is the rear axle centre (as JAZDA records it)")
+    first_gear: Literal["forward", "reverse"] = Field(default="forward", description="Gear of the first run")
+    margin_mm: float = Field(default=0.0, ge=0, description="Clearance below this is reported as a violation")
+    ignore_start_collision: bool = Field(default=True, description="Do not count collisions before the car first keeps the margin (start pose on a bay edge)")
+    steer_jump_deg_per_m: float = Field(default=60.0, gt=0, description="A wheel angle change faster than this counts as a stop")
+    draw: bool = Field(default=True, description="Draw the runs, the swept path envelopes and the stops")
+    layer: str = Field(default="VEHICLE_PATH_CHECK", min_length=1)
+    stop_layer: str = Field(default="SP_POSTOJ", min_length=1)
+    violation_layer: str = Field(default="SP_NARUSZENIE", min_length=1)
+    outline_interval_mm: float = Field(default=2000.0, ge=0)
+    units: Literal["auto", "mm", "cm", "m"] = "auto"
+    vehicle: VehicleOverrides = Field(default_factory=VehicleOverrides)
 
 
 class RoundPathRequest(BaseModel):

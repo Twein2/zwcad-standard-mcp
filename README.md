@@ -106,17 +106,28 @@ uses LISP automatically for `group_by` layer/type
   forward or in reverse, with automatic rounding of sharp corners and a feasibility check (CAYENNE.LSP)
 - `round_path_corners`: round a straight-segment route with the vehicle's minimum radius (SCIEZKA)
 
-**Vehicle route planning** (needs numpy, installed by `install.bat`). Routes are planned in the QuickTurn model (tangent-continuous
-path of the guided axle, tractrix); if the margin cannot be kept, the boundary edges that must be violated are
-reported and marked (layer `SP_NARUSZENIE`).
-- `plan_vehicle_route`: find a collision-free route for a car inside a closed boundary from a start vector to
-  an end vector (hybrid A* with an exact Dubins tail, whole body with mirrors kept `margin_mm` from the
-  boundary, gear changes allowed or `allow_reverse=false`). Read-only; runs in the background and returns a
-  `plan_id`. Forward-only requests that are geometrically impossible are answered within seconds.
-- `get_vehicle_route_plan`: poll a running plan.
-- `draw_vehicle_route`: draw one polyline with arcs per gear (forward = front axle path, reverse = rear axle
-  path) and verify it: `vehicle_swept_path` on every segment plus an intersection / clearance check of the
-  envelopes against the boundary.
+**Vehicle route planning** (needs numpy, installed by `install.bat`). The car is modelled as a kinematic bicycle
+guided by the rear axle (as the owner's JAZDA simulator): the wheel angle changes continuously while moving, up
+to the lock atan(L / RR) from the vehicle data (no hidden reserve; `steer_fraction` adds an explicit one), and the
+car may stop and turn the wheels (`allow_steer_in_place`, default on: every gear change, and inside a run for a
+`stop_penalty_m` cost). The whole body with mirrors keeps `margin_mm` (default 50 mm, exact re-check of the final
+poses). If the margin cannot be kept, the boundary edges that must be violated are reported and marked (layer
+`SP_NARUSZENIE`); if no route exists, the result says where the car gets stuck.
+- `plan_vehicle_route`: route from a start to an end inside a closed boundary. Start / end are vectors or bays
+  (`start_region_handle` / `end_region_handle`: car centre anywhere in the bay, heading along its long axis
+  ± `heading_tolerance_deg`, both ways round tried; fewest gear changes, then shortest length wins). A start
+  pose that touches the boundary is accepted (`start_collision="warn"`, reported separately). Read-only; runs in
+  the background (`time_budget_s` default 300 s, max 900) and returns a `plan_id`. Forward-only requests that
+  are geometrically impossible are answered within seconds.
+- `get_vehicle_route_plan`: poll a running plan (stage, elapsed time, best route so far);
+  `cancel_vehicle_route_plan` stops it and keeps the best route found.
+- `draw_vehicle_route`: draw one polyline with arcs per gear (rear axle path), the stops (layer `SP_POSTOJ`,
+  "stop: koła 32.9° L → 32.9° P") and verify every segment with `vehicle_swept_path` plus an intersection
+  check of the envelopes against the boundary. Steering jumps are allowed only at the declared stops, in
+  forward and reverse runs alike.
+- `verify_vehicle_path`: check a hand-made rear-axle trace (e.g. JAZDA's `SP_SLAD_JAZDY`): gear changes, wheel
+  angle, stops, per-run lengths, max lock used, minimum clearance and collisions (which car part hits which
+  edge), ignoring a start pose that already touches the boundary; draws the envelopes like `draw_vehicle_route`.
 
 Typical request: *"in the open drawing find the boundary on layer X and the vectors on layers Y and Z, and draw
 the vehicle route from Y to Z without touching X"* → `select_entities` / `count_entities` for the handles,

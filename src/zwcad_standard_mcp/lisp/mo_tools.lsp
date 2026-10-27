@@ -690,7 +690,8 @@
                         vL vFO vRO vW vWM vMX vMD vTRF vTRR vTW vTD vTC vSS rr dmax rfmin rmin
                         PF PFp PR ux tg tg0 tgN nl phi dd th a0 a1 dl dmaxf over prevover nover nextd hb
                         lPOSE lPF lTFL lTFR lTRL lTRR ext pth envq lENV rec k bidx rmax rminr lLeft lRight
-                        ps q p npts GP tgw dlt thp sprev rfc fx r env tyres pos warn PFe PRe sdl psdl djmax)
+                        ps q p npts GP tgw dlt thp sprev rfc fx r env tyres pos warn PFe PRe sdl psdl djmax
+                        rg sgn stops nexc jmp nst)
   (mosp:layers-begin opts)
   (setq *MOSP:VEH* (mosp:vehicle (zwmcp:opt "vehicle" opts nil))
         bk (= (zwmcp:opt "mode" opts "Przod") "Tyl")
@@ -700,6 +701,12 @@
     (zwmcp:fail (strcat "Path " path-h " is " typ ", not a path (use a polyline, line, arc or spline).")))
   (if (vl-catch-all-error-p (vl-catch-all-apply 'vlax-curve-getEndParam (list ent)))
     (zwmcp:fail (strcat "Path " path-h " (" typ ") is not a curve that can be followed.")))
+  ;; guide: "front" = front axle follows the path (forward, QuickTurn), "rear" = rear axle follows the path with
+  ;; the car axis tangent (always when reversing; forward routes of plan_vehicle_route since #62)
+  (setq rg (or bk (= (zwmcp:opt "guide" opts "front") "rear"))
+        sgn (if bk -1.0 1.0)
+        stops (zwmcp:opt "stops" opts nil)
+        nexc 0)
   (setq un (zwmcp:opt "units" opts 2)
         sc (mosp:scale un)
         rev (zwmcp:opt "reverse" opts nil)
@@ -756,7 +763,9 @@
 
   (list (cons "success" T)
         (cons "vehicle" (mosp:v 'NAME))
-        (cons "mode" (if bk "reverse (path = rear axle centre)" "forward (path = front axle centre)"))
+        (cons "mode" (cond (bk "reverse (path = rear axle centre)")
+                           (rg "forward (path = rear axle centre)")
+                           (T "forward (path = front axle centre)")))
         (cons "path_handle" ent)
         (cons "fillet" (if fx (list (cons "new_path_handle" (car fx)) (cons "corners_rounded" (cadr fx))
                                     (cons "problems" (caddr fx)) (cons "radius_cm" rfc))
@@ -765,6 +774,8 @@
         (cons "required_steer_deg" (mosp:deg dmaxf))
         (cons "max_steer_change_per_step_deg" (mosp:deg djmax))
         (cons "steering_continuous" (if (< (mosp:deg djmax) 3.0) T 'false))
+        (cons "stops_declared" (length stops))
+        (cons "steering_jumps_at_stops" nexc)
         (cons "min_path_radius_mm" (/ rmin sc))
         (cons "fillet_radius_min_cm" (mosp:ceil (/ rmin sc 10.0)))
         (cons "feasible" (if (> nover 0) 'false T))
@@ -775,6 +786,13 @@
         (cons "position_handles" pos)
         (cons "layers" (mosp:layers-end))
         (cons "warning" warn))
+)
+
+;; a declared stop within the last w path units before station s
+(defun mosp:stop-near (s w lst / hit)
+  (foreach st lst
+    (if (and (>= st (- s w 1e-6)) (<= st (+ s 1e-6))) (setq hit T)))
+  hit
 )
 
 ;; body of the simulation (dynamic scope: uses the locals of mo:swept-path)
@@ -791,13 +809,13 @@
           tg (mosp:tan ent sd))
     (if rev (setq tg (mosp:mul tg -1.0)))
     (if (null tg0) (setq tg0 tg))
-    (if bk
-      ;; reversing: rear axle centre follows the path, car axis tangent to the path
+    (if rg
+      ;; rear axle centre follows the path, car axis tangent to the path (reversing: car faces backwards)
       (setq th  (angle '(0.0 0.0) tg)
             dlt (if (and thp (> (- s sprev) 1e-9))
-                  (atan (* (- vL) (/ (mosp:dang th thp) (- s sprev))))
+                  (atan (* sgn vL (/ (mosp:dang th thp) (- s sprev))))
                   0.0)
-            phi (+ th pi)
+            phi (if bk (+ th pi) th)
             ux  (list (cos phi) (sin phi))
             PR  GP
             PF  (mosp:add PR (mosp:mul ux vL))
@@ -835,10 +853,20 @@
     (setq nl (mosp:left ux) tgN tg)
     ;; steering change between calculation steps: a jump means the path has a kink (forward) or a curvature
     ;; jump (reverse) - the wheels would have to turn instantly (FINDINGS #57)
-    (if psdl (setq djmax (max djmax (abs (- sdl psdl)))))
+    ;; a jump at a declared stop (the car stands and the driver turns the wheels) is allowed
+    ;; rear-guided: the first station has no steering estimate yet (placeholder 0): no jump to or from it
+    (setq nst (if nst (1+ nst) 1))
+    (if (and rg (< nst 3)) (setq psdl nil))
+    (if psdl
+      (progn
+        (setq jmp (abs (- sdl psdl)))
+        (if (and (> (mosp:deg jmp) 3.0)
+                 (mosp:stop-near s (* 2.0 stp) stops))
+          (setq nexc (1+ nexc))
+          (setq djmax (max djmax jmp)))))
     (setq psdl sdl)
     (setq dmaxf (max dmaxf dl)
-          over  (> dl (+ dmax 1e-4)))
+          over  (> dl (+ dmax 1e-3)))     ; 0.06 deg: steering estimated from tangents of a drawn path
     (setq lPOSE (cons (list PF ux) lPOSE))
     (if (or (null lPF) (> (distance GP (car lPF)) (* 0.01 stp)))
       (setq lPF (cons GP lPF)))
@@ -988,6 +1016,24 @@
     (entmake (list '(0 . "TEXT") '(100 . "AcDbEntity") (cons 8 lay) '(62 . 1) '(100 . "AcDbText")
                    (list 10 (car mid) (cadr mid) 0.0) (cons 40 txth) (cons 1 (cdr (assoc "text" m)))
                    (cons 50 ang) '(72 . 1) (list 11 (car mid) (+ (cadr mid) (* 0.6 txth)) 0.0) '(100 . "AcDbText") '(73 . 0)))
+    (setq out (cons (cdr (assoc 5 (entget (entlast)))) out)))
+  (reverse out)
+)
+
+;;; stops of a route (the car stands and the driver turns the wheels): small circle + label on layer lay
+;;; marks: list of (("pos" x y) ("text" . "...")) ; size / txth in drawing units
+(defun mo:mark-stops (lay marks size txth / out p)
+  (if (not (tblsearch "LAYER" lay))
+    (entmake (list '(0 . "LAYER") '(100 . "AcDbSymbolTableRecord") '(100 . "AcDbLayerTableRecord")
+                   (cons 2 lay) '(70 . 0) '(62 . 6) '(6 . "Continuous"))))
+  (foreach m marks
+    (setq p (cdr (assoc "pos" m)))
+    (entmake (list '(0 . "CIRCLE") '(100 . "AcDbEntity") (cons 8 lay) '(100 . "AcDbCircle")
+                   (list 10 (car p) (cadr p) 0.0) (cons 40 size)))
+    (setq out (cons (cdr (assoc 5 (entget (entlast)))) out))
+    (entmake (list '(0 . "TEXT") '(100 . "AcDbEntity") (cons 8 lay) '(100 . "AcDbText")
+                   (list 10 (+ (car p) (* 1.5 size)) (+ (cadr p) (* 0.5 size)) 0.0) (cons 40 txth)
+                   (cons 1 (cdr (assoc "text" m))) '(50 . 0.0) '(100 . "AcDbText")))
     (setq out (cons (cdr (assoc 5 (entget (entlast)))) out)))
   (reverse out)
 )

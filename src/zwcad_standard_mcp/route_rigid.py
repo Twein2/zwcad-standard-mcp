@@ -377,7 +377,7 @@ def _smooth(prims: list[dict], free_many, kmax: float, res: float) -> list[dict]
 
 def _plan_once(boundary, start_vec, end_vec, vehicle: dict, units: str = "cm", *, margin_mm: float = 100.0,
                allow_reverse: bool = True, max_gear_changes: int = 3, step_mm: float = 250.0,
-               steer_fraction: float = 0.95, time_budget_s: float = 50.0, anchor: str = "centre",
+               steer_fraction: float = 1.0, time_budget_s: float = 50.0, anchor: str = "centre",
                h_weight: float = 2.0, guide: str = "relaxed", switch_factor: float = 1.03,
                xy_bin_factor: float = 0.4, steer_factor: float = 0.08, _lattice=None) -> dict[str, Any]:
     """Plan a route. ``boundary``: closed polygon points (drawing units). Vectors: [[x, y], [x, y]]."""
@@ -387,7 +387,6 @@ def _plan_once(boundary, start_vec, end_vec, vehicle: dict, units: str = "cm", *
     car = Car.from_vehicle(vehicle, units)
     margin, step = margin_mm * k, step_mm * k
     margin_user = margin
-    margin = margin + 10.0 * k          # 1 cm reserve for the sampling density of the search
     poly = np.asarray(boundary, dtype=float)[:, :2]
     if len(poly) < 3:
         raise PlanningError("The boundary needs at least 3 points.")
@@ -441,7 +440,7 @@ def _plan_once(boundary, start_vec, end_vec, vehicle: dict, units: str = "cm", *
                                 f"(clearance {c:.1f} < margin {margin:.1f} drawing units). "
                                 "Check the vector direction and the anchor convention.")
 
-    kmax = steer_fraction / car.rmin
+    kmax = math.tan(math.atan2(car.L, car.rmin) * steer_fraction) / car.L
     rev_w = 1.5
     gx, gy = goal[0], goal[1]
     lat = _lattice or HeadingLattice(free_many, poly, goal, car.rmin * 0.8, res_xy=250.0 * k, n_head=24,
