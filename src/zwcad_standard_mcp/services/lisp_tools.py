@@ -364,18 +364,22 @@ class LispToolsMixin:
         return marks
 
     def _swept_checks(self, segments: list[dict], handles: list[str], units: str, overrides: dict,
-                      outline_interval_mm: float, cp: str) -> tuple[list, list]:
+                      outline_interval_mm: float, cp: str, lock_tol_deg: float = 0.1,
+                      lock_marks: bool = True) -> tuple[list, list]:
         checks, envelopes = [], []
         for seg, handle in zip(segments, handles):
             opts, _, _ = self._vehicle_opts(seg["gear"], units, overrides)
             opts.update({"auto_fillet": False, "interval": outline_interval_mm, "show_layers": True,
                          "guide": "rear" if str(seg.get("path", "")).startswith("rear") else "front",
-                         "stops": [st["distance"] for st in seg.get("stops") or []]})
+                         "stops": [st["distance"] for st in seg.get("stops") or []],
+                         "lock_tol_deg": float(lock_tol_deg), "lock_marks": bool(lock_marks)})
             value = self.adapter.lisp_call_expr(lisp_call("mo:swept-path", handle, opts, codepage=cp),
                                                 undo=True, name="vehicle_swept_path") or {}
             checks.append({"gear": seg["gear"], "path_handle": handle, "guide": opts["guide"],
                            "feasible": value.get("feasible"), "required_steer_deg": value.get("required_steer_deg"),
                            "max_steer_deg": value.get("max_steer_deg"), "envelope_handle": value.get("envelope_handle"),
+                           "lock_tolerance_deg": value.get("lock_tolerance_deg"),
+                           "overshoot_places": value.get("overshoot_places"),
                            "steering_continuous": value.get("steering_continuous"),
                            "max_steer_change_per_step_deg": value.get("max_steer_change_per_step_deg"),
                            "stops_declared": value.get("stops_declared"),
@@ -429,7 +433,8 @@ class LispToolsMixin:
         if not request.verify:
             return out
         checks, envelopes = self._swept_checks(segments, [p["handle"] for p in drawn or []], plan["units"],
-                                               plan.get("vehicle_overrides") or {}, request.outline_interval_mm, cp)
+                                               plan.get("vehicle_overrides") or {}, request.outline_interval_mm, cp,
+                                               lock_tol_deg=request.lock_tolerance_deg)
         collision = self.adapter.lisp_call_expr(
             lisp_call("mo:envelope-check", plan["boundary_handle"], envelopes, codepage=cp), name="envelope_check") or []
         start_part = result.get("start_collision")
@@ -475,7 +480,8 @@ class LispToolsMixin:
             ana = route_check.analyse_trace(pts, car, poly, anchor=request.anchor,
                                             jump_deg_per_m=request.steer_jump_deg_per_m,
                                             ignore_start_collision=request.ignore_start_collision,
-                                            margin=request.margin_mm * k, first_gear=request.first_gear)
+                                            margin=request.margin_mm * k, first_gear=request.first_gear,
+                                            lock_tolerance_deg=request.lock_tolerance_deg)
         except ValueError as exc:
             raise ValidationError(str(exc)) from exc
         poses = ana.pop("_poses")
@@ -522,8 +528,15 @@ class LispToolsMixin:
             out["violation_marks"] = self.adapter.lisp_call_expr(
                 lisp_call("mo:mark-violations", request.violation_layer, vmarks, 60.0 * k, 250.0 * k, codepage=cp),
                 undo=True, name="mark_violations")
+        if ana["lock_exceedances"]:      # one mark per place, from the analysis (the swept path draws none here)
+            lmarks = [{"from": e_["from"], "to": e_["to"],
+                       "text": f"skr\u0119t {e_['max_steer_deg']:.2f}%%d > {ana['lock_deg']:.2f}%%d"}
+                      for e_ in ana["lock_exceedances"]]
+            out["lock_marks"] = self.adapter.lisp_call_expr(
+                lisp_call("mo:mark-violations", request.lock_layer, lmarks, 40.0 * k, 200.0 * k, codepage=cp),
+                undo=True, name="mark_lock_exceedances")
         checks, envelopes = self._swept_checks(segments, [p_["handle"] for p_ in drawn or []], units, overrides,
-                                               request.outline_interval_mm, cp)
+                                               request.outline_interval_mm, cp, lock_marks=False)
         for c_ in checks:   # the swept path tool estimates steering from chords; the analysis above is exact
             for key_ in ("feasible", "required_steer_deg", "steering_continuous", "max_steer_change_per_step_deg"):
                 c_.pop(key_, None)
@@ -555,7 +568,7 @@ class LispToolsMixin:
         self._ensure_write()
         opts.update({"reverse": request.against_drawing_direction, "step": request.step_mm,
                      "interval": request.outline_interval_mm, "auto_fillet": request.auto_fillet,
-                     "show_layers": request.show_layers})
+                     "show_layers": request.show_layers, "lock_tol_deg": request.lock_tolerance_deg})
         value = self.adapter.lisp_call_expr(
             lisp_call("mo:swept-path", request.path_handle, opts, codepage=self.adapter.lisp_codepage()),
             undo=True, name="vehicle_swept_path")

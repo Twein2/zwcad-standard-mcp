@@ -647,6 +647,9 @@
 ;;;   "step" calculation step [mm] | "interval" draw the car outline every [mm], 0 = none
 ;;;   "auto_fillet" T = round sharp LWPOLYLINE corners first (new polyline on SP_SCIEZKA)
 ;;;   "vehicle" assoc list overriding *MOSP:VEH0* values in mm, e.g. (("L" . 2900.0) ("TC" . 11800.0))
+;;;   "lock_tol_deg" steering up to lock + this still counts as within the lock (default 0.1; drawn paths give
+;;;                  the angle only from tangents) | "lock_marks" nil = no SP_PRZEKROCZENIE marks (the caller
+;;;                  checks the steering itself); marks closer than one wheelbase are merged into one place
 
 (defun mosp:vehicle (overrides / veh sym)
   (setq veh *MOSP:VEH0*)
@@ -691,7 +694,7 @@
                         PF PFp PR ux tg tg0 tgN nl phi dd th a0 a1 dl dmaxf over prevover nover nextd hb
                         lPOSE lPF lTFL lTFR lTRL lTRR ext pth envq lENV rec k bidx rmax rminr lLeft lRight
                         ps q p npts GP tgw dlt thp sprev rfc fx r env tyres pos warn PFe PRe sdl psdl djmax
-                        rg sgn stops nexc jmp nst)
+                        rg sgn stops nexc jmp nst ltol lmk lastov)
   (mosp:layers-begin opts)
   (setq *MOSP:VEH* (mosp:vehicle (zwmcp:opt "vehicle" opts nil))
         bk (= (zwmcp:opt "mode" opts "Przod") "Tyl")
@@ -725,7 +728,9 @@
   (setq rr    (- (sqrt (- (* 0.25 vTC vTC) (* vL vL))) (* 0.5 vTRF))
         dmax  (atan vL rr)
         rfmin (sqrt (+ (* rr rr) (* vL vL)))
-        rmin  (if bk rr rfmin))
+        rmin  (if bk rr rfmin)
+        ltol  (* (/ pi 180.0) (float (zwmcp:opt "lock_tol_deg" opts 0.1)))
+        lmk   (zwmcp:opt "lock_marks" opts T))
 
   ;; optional automatic rounding of sharp polyline corners
   (if (and (= typ "LWPOLYLINE") (zwmcp:opt "auto_fillet" opts T))
@@ -771,6 +776,7 @@
                                     (cons "problems" (caddr fx)) (cons "radius_cm" rfc))
                          nil))
         (cons "max_steer_deg" (mosp:deg dmax))
+        (cons "lock_tolerance_deg" (mosp:deg ltol))
         (cons "required_steer_deg" (mosp:deg dmaxf))
         (cons "max_steer_change_per_step_deg" (mosp:deg djmax))
         (cons "steering_continuous" (if (< (mosp:deg djmax) 3.0) T 'false))
@@ -802,7 +808,7 @@
     (setq slist (cons (* k stp) slist) k (1+ k)))
   (setq slist (reverse (cons tot slist)))
 
-  (setq phi nil PFp nil thp nil sprev nil nextd 0.0 dmaxf 0.0 nover 0 prevover nil psdl nil djmax 0.0)
+  (setq phi nil PFp nil thp nil sprev nil nextd 0.0 dmaxf 0.0 nover 0 prevover nil psdl nil djmax 0.0 lastov nil)
   (foreach s slist
     (setq sd (if rev (- tot s) s)
           GP (mosp:pt ent sd)
@@ -866,7 +872,7 @@
           (setq djmax (max djmax jmp)))))
     (setq psdl sdl)
     (setq dmaxf (max dmaxf dl)
-          over  (> dl (+ dmax 1e-3)))     ; 0.06 deg: steering estimated from tangents of a drawn path
+          over  (> dl (+ dmax ltol)))     ; tolerance: steering estimated from tangents of a drawn path
     (setq lPOSE (cons (list PF ux) lPOSE))
     (if (or (null lPF) (> (distance GP (car lPF)) (* 0.01 stp)))
       (setq lPF (cons GP lPF)))
@@ -875,15 +881,19 @@
           lTRL (cons (mosp:add PR (mosp:mul nl (+ (/ vTRR 2.0) hb))) lTRL)
           lTRR (cons (mosp:sub PR (mosp:mul nl (+ (/ vTRR 2.0) hb))) lTRR))
     (cond
-      ((and over (not prevover))
+      ;; one place per exceedance; a new one closer than one wheelbase to the last is the same place (FINDINGS #70)
+      ((and over (not prevover) (or (null lastov) (> (distance PR lastov) vL)))
        (setq nover (1+ nover))
-       (mosp:layer "SP_PRZEKROCZENIE" 30)
-       (mosp:circle PF (* 400.0 sc) "SP_PRZEKROCZENIE")
-       (mosp:car PF PR ux tgw "SP_PRZEKROCZENIE"))
+       (if lmk
+         (progn
+           (mosp:layer "SP_PRZEKROCZENIE" 30)
+           (mosp:circle PF (* 400.0 sc) "SP_PRZEKROCZENIE")
+           (mosp:car PF PR ux tgw "SP_PRZEKROCZENIE"))))
       ((and (> intv 0.0) (or (>= s nextd) (= s tot)))
        (mosp:car PF PR ux tgw "SP_OBRYS"))
     )
     (while (and (> intv 0.0) (>= s nextd)) (setq nextd (+ nextd intv)))
+    (if over (setq lastov PR))
     (setq prevover over)
   )
   ;; end pose: kept apart because the envelope loop below reuses PF / ux / nl

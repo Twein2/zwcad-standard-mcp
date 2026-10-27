@@ -157,14 +157,19 @@ def contact(pose, car: Car, boundary) -> dict[str, Any]:
 
 def analyse_trace(points, car: Car, boundary, *, anchor: str = "rear_axle", lock_deg: float | None = None,
                   jump_deg_per_m: float = 60.0, ignore_start_collision: bool = True,
-                  margin: float = 0.0, first_gear: str = "forward") -> dict[str, Any]:
+                  margin: float = 0.0, first_gear: str = "forward",
+                  lock_tolerance_deg: float = 0.1) -> dict[str, Any]:
     """Analyse a driven trace given as points of the anchor (rear axle by default) in driving order.
 
     Cusps are detected from the direction reversal (consecutive chords turning back by more than 90 deg), the
     wheel angle from the curvature (rear axle: tan(delta) = L * dphi/ds, sign by gear), stops where the wheel
-    angle jumps faster than ``jump_deg_per_m``. Heading at every point: for an evenly spaced trace (simulator
-    output: one constant-curvature arc per step) it is reconstructed exactly from the chords; otherwise the mean
-    of the adjacent chords.
+    angle jumps faster than ``jump_deg_per_m``. Heading at every point: the mean of the adjacent chords, which is
+    exact on constant-curvature steps (simulator output) and stable against rounded coordinates. The former
+    alternating reconstruction for evenly spaced traces integrated the rounding noise of the vertices and
+    overstated the full lock by 0.04-0.07 deg on JAZDA traces (FINDINGS #70).
+    ``lock_tolerance_deg``: steering up to lock + tolerance still counts as within the lock (rounding of drawn
+    paths); places beyond it are listed in ``lock_exceedances`` (one entry per place, places closer than one
+    wheelbase merged).
     """
     P = np.asarray(points, dtype=float)[:, :2]
     keep = np.concatenate([[True], np.hypot(np.diff(P[:, 0]), np.diff(P[:, 1])) > 1e-9])
@@ -185,37 +190,33 @@ def analyse_trace(points, car: Car, boundary, *, anchor: str = "rear_axle", lock
     h = ang + np.where(gear < 0, math.pi, 0.0)
     chord_h = np.unwrap(h)
     even = float(ln.std() / ln.mean()) < 0.02 if len(ln) > 2 else False
-    if even:
-        phi = np.empty(len(P))
-        phi[0] = chord_h[0]
-        for i in range(len(chord_h)):
-            phi[i + 1] = 2 * chord_h[i] - phi[i]
-        alt = np.array([(-1.0) ** i for i in range(len(phi))])
-        d2b, d2a = np.diff(phi, 2), np.diff(alt, 2)
-        e = -float(np.dot(d2b, d2a) / np.dot(d2a, d2a)) if len(d2a) else 0.0
-        phi = phi + e * alt
-        dphi = np.diff(phi)
-    if not even:
-        phi = np.empty(len(P))
-        phi[0], phi[-1] = chord_h[0], chord_h[-1]
-        phi[1:-1] = 0.5 * (chord_h[:-1] + chord_h[1:])
-        dphi = np.diff(phi)
+    phi = np.empty(len(P))
+    phi[0], phi[-1] = chord_h[0], chord_h[-1]
+    phi[1:-1] = 0.5 * (chord_h[:-1] + chord_h[1:])
+    dphi = np.diff(phi)
     delta = np.arctan(car.L * dphi / ln * gear)                # wheel angle on every step (+ = left)
     lock = math.radians(lock_deg) if lock_deg is not None else math.atan2(car.L, car.rmin)
+    tol = math.radians(max(0.0, lock_tolerance_deg))
+    exceed = lock_exceedances(P, ln, delta, lock, tol, merge_gap=car.L)
     poses = np.column_stack([P, phi])
     clr = exact_clearance(poses, car, boundary)
     # stops: wheel angle jumps faster than the rate a moving driver can turn the wheels
     jumps = np.abs(np.diff(delta))
     thr = math.radians(jump_deg_per_m) * 0.5 * (ln[:-1] + ln[1:]) / (1000.0 * car.k)
     stop_idx = [int(i) + 1 for i in np.nonzero(jumps > thr)[0] if int(i) + 1 not in cusps]
-    # merge stops on neighbouring vertices (a jump between two steps)
+    # merge stops on neighbouring vertices (with the mean-of-chords heading a jump spreads over two steps)
     stops = []
     for i in stop_idx:
-        if stops and i - stops[-1]["index"] <= 1:
+        if stops and i - stops[-1]["last"] <= 2:
+            stops[-1]["last"] = i
             stops[-1]["after_deg"] = round(math.degrees(delta[i]), 2)
             continue
-        stops.append({"index": i, "position": [round(float(P[i][0]), 3), round(float(P[i][1]), 3)],
+        stops.append({"index": i, "last": i, "position": [round(float(P[i][0]), 3), round(float(P[i][1]), 3)],
                       "before_deg": round(math.degrees(delta[i - 1]), 2), "after_deg": round(math.degrees(delta[i]), 2)})
+    for st in stops:                                     # the stop is where the car stood: middle of the jump
+        a_, b_ = st["index"], st.pop("last")
+        m = (a_ + b_ + 1) // 2 if b_ > a_ else a_
+        st["index"], st["position"] = m, [round(float(P[m][0]), 3), round(float(P[m][1]), 3)]
     # runs
     bounds = [0] + cusps + [len(P) - 1]
     runs = []
@@ -253,14 +254,17 @@ def analyse_trace(points, car: Car, boundary, *, anchor: str = "rear_axle", lock
             "cusps": [{"index": c_, "position": [round(float(P[c_][0]), 3), round(float(P[c_][1]), 3)]} for c_ in cusps],
             "runs": runs, "total_length": round(float(ln.sum()), 2),
             "lock_deg": round(math.degrees(lock), 2),
+            "lock_tolerance_deg": round(math.degrees(tol), 3),
             "max_steer_deg": round(float(np.degrees(np.abs(delta).max())), 2),
-            "lock_exceeded": bool(np.abs(delta).max() > lock + math.radians(0.05)),
+            "lock_exceeded": bool(exceed),
+            "lock_exceedances": exceed,
             "stops": stops, "start_collision": start_part,
             "min_clearance": round(float(check.min()), 2) if len(check) else None,
             "min_clearance_index": k_min,
             "poses_closer_than_5cm": int((check < 50.0 * car.k).sum()),
             "collisions": collisions, "collision_free": not collisions,
-            "heading_method": "exact (arc per step)" if even else "mean of adjacent chords",
+            "heading_method": ("mean of adjacent chords (even steps: exact on constant-curvature steps)"
+                               if even else "mean of adjacent chords"),
             "_poses": poses, "_delta": delta, "_gear": gear, "_clearance": clr}
 
 
@@ -301,4 +305,29 @@ def edge_violations(poses, car: Car, boundary, margin: float) -> list[dict]:
                     "min_clearance": round(dmin, 2), "intrusion": round(margin - dmin, 2),
                     "crosses_boundary": dmin < 0.0})
     out.sort(key=lambda v: -v["intrusion"])
+    return out
+
+
+def lock_exceedances(P, ln, delta, lock: float, tol: float, merge_gap: float) -> list[dict[str, Any]]:
+    """Places where |wheel angle| > lock + tol: one entry per place; places closer than ``merge_gap`` merged."""
+    over = np.abs(delta) > lock + tol
+    if not over.any():
+        return []
+    s = np.concatenate([[0.0], np.cumsum(ln)])            # station at the start of every step
+    groups: list[list[int]] = []
+    for i in np.nonzero(over)[0]:
+        i = int(i)
+        if groups and s[i] - s[groups[-1][-1] + 1] <= merge_gap:
+            groups[-1].append(i)
+        else:
+            groups.append([i])
+    out = []
+    for grp in groups:
+        k = grp[int(np.argmax(np.abs(delta[grp])))]
+        a, b = grp[0], grp[-1] + 1
+        out.append({"from_index": a, "to_index": b, "length": round(float(s[b] - s[a]), 2),
+                    "from": [round(float(P[a][0]), 3), round(float(P[a][1]), 3)],
+                    "to": [round(float(P[b][0]), 3), round(float(P[b][1]), 3)],
+                    "max_steer_deg": round(math.degrees(abs(float(delta[k]))), 2),
+                    "excess_deg": round(math.degrees(abs(float(delta[k])) - lock), 2)})
     return out
