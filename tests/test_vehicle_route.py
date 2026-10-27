@@ -283,3 +283,63 @@ def test_route_tools_registered() -> None:
     for name in ("plan_vehicle_route", "get_vehicle_route_plan", "cancel_vehicle_route_plan", "draw_vehicle_route",
                  "vehicle_swept_path", "verify_vehicle_path"):
         assert name in names
+
+
+# --------------------------------------------------------------------------- steering lock tolerance (FINDINGS #70)
+
+def _jazda(prog, ds=5.0, decimals=None):
+    """JAZDA-like rear-axle trace: midpoint step of ds per key press; prog = [(wheel angle rad, gear, steps)]."""
+    PR, phi, pts = np.array([0.0, 0.0]), math.pi / 2, [[0.0, 0.0]]
+    for delta, gear, n in prog:
+        for _ in range(n):
+            dphi = gear * math.tan(delta) / CAR.L * ds
+            pm = phi + dphi / 2
+            PR = PR + gear * ds * np.array([math.cos(pm), math.sin(pm)])
+            phi += dphi
+            pts.append(list(np.round(PR, decimals)) if decimals is not None else list(PR))
+    return pts
+
+
+_BOX = [[-5000, -5000], [5000, -5000], [5000, 5000], [-5000, 5000]]
+_PROG = [(0, 1, 40), (-CAR.lock, 1, 60), (0.3, 1, 50), (CAR.lock, 1, 120), (-CAR.lock, 1, 80),
+         (CAR.lock, -1, 60), (0, -1, 20), (CAR.lock, -1, 30), (0, -1, 25)]
+
+
+def test_full_lock_trace_with_rounded_coordinates_stays_within_lock() -> None:
+    # DWG coordinates rounded to 1e-6: the former alternating reconstruction showed 32.94-32.97 deg here
+    boundary = route_planner.polyline_points([p + [0.0] for p in _BOX], True, max_seg=200.0)
+    trace = _jazda(_PROG, decimals=6)
+    a = route_check.analyse_trace(trace, CAR, boundary)
+    excess = float(np.degrees(np.abs(a.pop("_delta")).max())) - LOCK
+    assert excess < 0.005                                   # rounding noise only
+    assert not a["lock_exceeded"] and a["lock_exceedances"] == []
+    strict = route_check.analyse_trace(trace, CAR, boundary, lock_tolerance_deg=0.0)
+    assert all(e["excess_deg"] < 0.01 for e in strict["lock_exceedances"])
+
+
+def test_stops_are_one_per_place_at_the_vertex_where_the_car_stood() -> None:
+    boundary = route_planner.polyline_points([p + [0.0] for p in _BOX], True, max_seg=200.0)
+    a = route_check.analyse_trace(_jazda(_PROG), CAR, boundary)
+    assert [s["index"] for s in a["stops"]] == [40, 100, 150, 270, 410, 430, 460]
+    assert [c["index"] for c in a["cusps"]] == [350]
+    first = a["stops"][0]
+    assert abs(first["before_deg"]) < 0.01 and abs(first["after_deg"] + LOCK) < 0.01
+
+
+def test_lock_exceedance_is_one_place_and_respects_tolerance() -> None:
+    boundary = route_planner.polyline_points([p + [0.0] for p in _BOX], True, max_seg=200.0)
+    over = math.radians(LOCK + 0.3)
+    trace = _jazda([(0, 1, 30), (over, 1, 40), (CAR.lock, 1, 3), (over, 1, 40), (0, 1, 30)])
+    a = route_check.analyse_trace(trace, CAR, boundary)
+    assert a["lock_exceeded"] and len(a["lock_exceedances"]) == 1      # 15 cm gap < wheelbase: same place
+    e = a["lock_exceedances"][0]
+    assert 0.25 < e["excess_deg"] < 0.35 and e["length"] > 350
+    assert not route_check.analyse_trace(trace, CAR, boundary, lock_tolerance_deg=0.5)["lock_exceeded"]
+
+
+def test_lock_tolerance_is_passed_to_the_swept_path() -> None:
+    lsp = (Path(__file__).resolve().parents[1] / "src/zwcad_standard_mcp/lisp/mo_tools.lsp").read_text(encoding="utf-8")
+    assert '(zwmcp:opt "lock_tol_deg" opts 0.1)' in lsp and '(zwmcp:opt "lock_marks" opts T)' in lsp
+    assert "(> dl (+ dmax ltol))" in lsp and "(> (distance PR lastov) vL)" in lsp
+    assert VerifyVehiclePathRequest(path_handle="A", boundary_handle="B").lock_tolerance_deg == 0.1
+    assert DrawVehicleRouteRequest(plan_id="P").lock_tolerance_deg == 0.1

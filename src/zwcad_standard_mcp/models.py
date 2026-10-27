@@ -354,6 +354,8 @@ class SweptPathRequest(BaseModel):
     outline_interval_mm: float = Field(default=0.0, ge=0, description="Draw the car outline every N mm (0 = never)")
     auto_fillet: bool = Field(default=True, description="Round sharp LWPOLYLINE corners with the minimum radius first (new path on SP_SCIEZKA)")
     show_layers: bool = Field(default=True, description="Switch on / thaw existing SP_* result layers that are off or frozen (reported in result.layers)")
+    lock_tolerance_deg: float = Field(default=0.1, ge=0, le=2,
+                                      description="Steering up to lock + this counts as within the lock: drawn paths give the angle only from tangents (rounding); 0 = strict")
     units: Literal["auto", "mm", "cm", "m"] = "auto"
     vehicle: VehicleOverrides = Field(default_factory=VehicleOverrides)
 
@@ -410,6 +412,8 @@ class DrawVehicleRouteRequest(BaseModel):
     stop_layer: str = Field(default="SP_POSTOJ", min_length=1, description="Layer for the stops (wheels turned while standing)")
     verify: bool = Field(default=True, description="Run vehicle_swept_path on every segment and check the envelopes against the boundary")
     outline_interval_mm: float = Field(default=2000.0, ge=0, description="Car outline every N mm in the swept path (0 = none)")
+    lock_tolerance_deg: float = Field(default=0.1, ge=0, le=2,
+                                      description="Steering up to lock + this counts as within the lock: drawn paths give the angle only from tangents (rounding); 0 = strict")
 
 
 class VerifyVehiclePathRequest(BaseModel):
@@ -424,10 +428,14 @@ class VerifyVehiclePathRequest(BaseModel):
     margin_mm: float = Field(default=0.0, ge=0, description="Clearance below this is reported as a violation")
     ignore_start_collision: bool = Field(default=True, description="Do not count collisions before the car first keeps the margin (start pose on a bay edge)")
     steer_jump_deg_per_m: float = Field(default=60.0, gt=0, description="A wheel angle change faster than this counts as a stop")
+    lock_tolerance_deg: float = Field(default=0.1, ge=0, le=2,
+                                      description="Steering up to lock + this counts as within the lock: drawn paths give the angle only from tangents (rounding); 0 = strict")
     draw: bool = Field(default=True, description="Draw the runs, the swept path envelopes and the stops")
     layer: str = Field(default="VEHICLE_PATH_CHECK", min_length=1)
     stop_layer: str = Field(default="SP_POSTOJ", min_length=1)
     violation_layer: str = Field(default="SP_NARUSZENIE", min_length=1)
+    lock_layer: str = Field(default="SP_PRZEKROCZENIE", min_length=1,
+                            description="Layer for the places that need more steering than lock + tolerance (one mark per place)")
     outline_interval_mm: float = Field(default=2000.0, ge=0)
     units: Literal["auto", "mm", "cm", "m"] = "auto"
     vehicle: VehicleOverrides = Field(default_factory=VehicleOverrides)

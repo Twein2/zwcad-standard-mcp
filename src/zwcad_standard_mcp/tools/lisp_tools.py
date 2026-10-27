@@ -137,8 +137,9 @@ def register_lisp_tools(mcp: Any, service: CadService) -> None:
         """Draw a planned route: one LWPOLYLINE with arcs per gear (rear axle path; forward green, reverse red),
         the stops on stop_layer (SP_POSTOJ, "stop: koła 32.9° L → 32.9° P"), the boundary parts the route has to
         violate (violation_layer), and with verify=true the swept path of every segment checked against the
-        boundary. verified=true needs: steering within the lock, no steering jump while moving (jumps at the
-        declared stops are allowed) in forward and reverse alike, envelopes not crossing the boundary."""
+        boundary. verified=true needs: steering within the lock (+ lock_tolerance_deg, default 0.1), no steering
+        jump while moving (jumps at the declared stops are allowed) in forward and reverse alike, envelopes not
+        crossing the boundary."""
         return invoke(service.draw_vehicle_route, request, dry_run, confirm)
 
     @mcp.tool()
@@ -148,8 +149,10 @@ def register_lisp_tools(mcp: Any, service: CadService) -> None:
         Gear changes are detected from direction reversals, the wheel angle from the curvature, stops where the
         angle jumps. Returns per-run lengths, max lock used, minimum clearance (exact, body with mirrors) and the
         collisions (which car part hits which edge), ignoring the first part where the start pose already
-        collides (ignore_start_collision). dry_run=true only analyses; otherwise the runs, swept path envelopes,
-        stops and collisions are drawn like draw_vehicle_route.
+        collides (ignore_start_collision). Steering up to lock + lock_tolerance_deg (default 0.1, 0 = strict)
+        counts as within the lock; places beyond it are listed in analysis.lock_exceedances and marked once per
+        place on lock_layer (SP_PRZEKROCZENIE). dry_run=true only analyses; otherwise the runs, swept path
+        envelopes, stops and collisions are drawn like draw_vehicle_route.
         """
         return invoke(service.verify_vehicle_path, request, dry_run, confirm)
 
